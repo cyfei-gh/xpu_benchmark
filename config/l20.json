@@ -1,0 +1,24 @@
+{
+    "gemm": {
+        "num_iters": 30,
+        "dry_run_iters": 5,
+        "dtypes": ["float32", "bfloat16", "float16"],
+        "sizes": [
+            [1, 4096, 4096],
+            [4, 4096, 4096],
+            [16, 4096, 4096],
+            [64, 4096, 4096],
+            [128, 4096, 4096],
+            [1024, 4096, 4096],
+            [1024, 1024, 1024],
+            [2048, 2048, 2048],
+            [4096, 4096, 4096]
+        ]
+    },
+    "membw": {
+        "num_iters": 50,
+        "dry_run_iters": 10,
+        "dtypes": ["float32"],
+        "patterns": ["seq_copy", "seq_read", "seq_write", "strided_copy"]
+    }
+}
