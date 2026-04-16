@@ -26,49 +26,9 @@ pip install -r requirements.txt
 
 ```bash
 bash run.sh
-```
-
-仅运行 GEMM 测试：
-
-```bash
-bash run.sh gemm
-```
-
-仅运行内存带宽测试：
-
-```bash
-bash run.sh membw
-```
-
-使用自定义配置文件：
-
-```bash
-bash run.sh all config/h100.json
-```
-
-## 命令行用法
-
-```bash
-# 运行所有基准测试
-python -m xpu_benchmark
-
-# 仅运行 GEMM 测试
-python -m xpu_benchmark --mode gemm
-
-# 仅运行内存带宽测试
-python -m xpu_benchmark --mode membw
 
 # 指定配置文件
-python -m xpu_benchmark --config config/l20.json
-
-# 自定义 GEMM 尺寸
-python -m xpu_benchmark --mode gemm --sizes 4096,4096,4096 64,4096,4096
-
-# 指定数据类型
-python -m xpu_benchmark --mode gemm --dtypes float16 bfloat16
-
-# 保存结果到目录
-python -m xpu_benchmark --output results/
+python -m xpu_benchmark --config config/deepseek.json
 ```
 
 ## 配置文件
@@ -97,9 +57,8 @@ python -m xpu_benchmark --output results/
 ```
 
 预置配置文件：
-- `config/l20.json` - NVIDIA L20 GPU 配置
-- `config/h100.json` - NVIDIA H100 GPU 配置
-- `config/quick.json` - 快速测试配置
+- `config/deepseek.json` - NVIDIA L20 GPU 配置
+- `config/basic.json` - 快速测试配置
 
 ## 输出结果
 
@@ -130,8 +89,7 @@ xpu_benchmark/
 ├── timing.py           # 计时工具
 ├── hw_spec.py          # 硬件规格
 ├── config/             # 配置文件目录
-│   ├── l20.json
-│   ├── h100.json
-│   └── quick.json
+│   ├── deepseek.json
+│   └── basic.json
 └── results/            # 结果输出目录
 ```

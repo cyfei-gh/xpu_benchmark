@@ -7,20 +7,22 @@ import torch
 
 # Peak performance specs: bandwidth in GB/s, compute in TFLOPS/TOPS
 DEVICE_SPECS = {
-    "NVIDIA RTX 5000": {
+    "NVIDIA RTX PRO 5000": {
         "name": "RTX 5000",
         "bandwidth": 1344,
         "memory_capacity": 72,
+        "l2_cache": 96,           # 96 MB
         "float32": 65,
         "float16": 250,
         "bfloat16": 250,
         "int8": 500,
         "float8_e4m3fn": 1000,
     },
-    "NVIDIA RTX 6000D": {
+    "NVIDIA RTX PRO 6000D": {
         "name": "RTX 6000D",
         "bandwidth": 1800,
         "memory_capacity": 96,
+        "l2_cache": 96,           # 96 MB
         "float32": 120,
         "float16": 480,
         "bfloat16": 480,
@@ -31,6 +33,7 @@ DEVICE_SPECS = {
         "name": "L20",
         "bandwidth": 864,        # 864 GB/s HBM bandwidth
         "memory_capacity": 48,   # 48 GB
+        "l2_cache": 96,          # 96 MB
         "float32": 59.8,         # CUDA core FP32
         "float16": 119.5,        # Tensor Core FP16
         "bfloat16": 119.5,       # Tensor Core BF16
@@ -41,6 +44,7 @@ DEVICE_SPECS = {
         "name": "H20",
         "bandwidth": 4000,
         "memory_capacity": 96,
+        "l2_cache": 60,           # 60 MB
         "float32": 40,
         "float16": 147,
         "bfloat16": 147,
@@ -51,6 +55,7 @@ DEVICE_SPECS = {
         "name": "H100 SXM",
         "bandwidth": 3350,
         "memory_capacity": 80,
+        "l2_cache": 50,           # 50 MB
         "float32": 67,
         "float16": 989,
         "bfloat16": 989,
@@ -61,6 +66,7 @@ DEVICE_SPECS = {
         "name": "A100 SXM",
         "bandwidth": 2000,
         "memory_capacity": 80,
+        "l2_cache": 40,           # 40 MB
         "float32": 19.5,
         "float16": 312,
         "bfloat16": 312,
@@ -140,3 +146,15 @@ def get_peak_bandwidth(device_name: str) -> float:
     if spec is None:
         return 0.0
     return spec.get("bandwidth", 0.0)
+
+
+def get_l2_cache_size(device_name: str) -> int:
+    """
+    Get L2 cache size in bytes for the given device.
+    Returns 40 MB (conservative default) if device is not found.
+    """
+    spec = get_device_spec(device_name)
+    if spec is None:
+        return 40 * 1024 * 1024  # 保守默认值
+    l2_mb = spec.get("l2_cache", 40)
+    return l2_mb * 1024 * 1024
