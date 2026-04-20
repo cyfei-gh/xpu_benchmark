@@ -1,0 +1,57 @@
+device,model,workload,category,description,batch_size,tp,dtype,M,N,K,median_time_ms,std_time_ms,tflops,theory_tflops,mfu_pct,bandwidth_gbps,mbu_pct
+NVIDIA L20,DeepSeek-V3,QKV_Proj,attention,"Fused QKV projection (128 q_head, 128 kv_head)",1,1,bfloat16,1,49152,7168,1.0357,0.0087,0.6803,0.8639,78.76,680.4553,78.76
+NVIDIA L20,DeepSeek-V3,O_Proj,attention,Attention output projection,1,1,bfloat16,1,7168,7168,0.0768,0.0022,1.3386,0.8638,154.97,1338.9578,154.97
+NVIDIA L20,DeepSeek-V3,MoE_Gate_Up,moe,"MoE expert gate+up (top8/256, ~1 tokens/expert)",1,1,bfloat16,1,4096,7168,0.0645,0.0012,0.9102,0.8637,105.39,910.5714,105.39
+NVIDIA L20,DeepSeek-V3,MoE_Down,moe,MoE expert down projection (~1 tokens/expert),1,1,bfloat16,1,7168,2048,0.0266,0.0024,1.1028,0.8635,127.72,1103.4616,127.72
+NVIDIA L20,DeepSeek-V3,QKV_Proj,attention,"Fused QKV projection (128 q_head, 128 kv_head)",2,1,bfloat16,2,49152,7168,0.9544,0.0078,1.4766,1.7274,85.48,738.5337,85.48
+NVIDIA L20,DeepSeek-V3,O_Proj,attention,Attention output projection,2,1,bfloat16,2,7168,7168,0.0788,0.0065,2.6065,1.7270,150.93,1304.0001,150.93
+NVIDIA L20,DeepSeek-V3,MoE_Gate_Up,moe,"MoE expert gate+up (top8/256, ~1 tokens/expert)",2,1,bfloat16,1,4096,7168,0.0655,0.0024,0.8960,0.8637,103.74,896.3438,103.74
+NVIDIA L20,DeepSeek-V3,MoE_Down,moe,MoE expert down projection (~1 tokens/expert),2,1,bfloat16,1,7168,2048,0.0266,0.0006,1.1028,0.8635,127.72,1103.4616,127.72
+NVIDIA L20,DeepSeek-V3,QKV_Proj,attention,"Fused QKV projection (128 q_head, 128 kv_head)",3,1,bfloat16,3,49152,7168,0.9554,0.0065,2.2126,2.5908,85.40,737.8971,85.40
+NVIDIA L20,DeepSeek-V3,O_Proj,attention,Attention output projection,3,1,bfloat16,3,7168,7168,0.0778,0.0023,3.9604,2.5898,152.92,1321.2547,152.92
+NVIDIA L20,DeepSeek-V3,MoE_Gate_Up,moe,"MoE expert gate+up (top8/256, ~1 tokens/expert)",3,1,bfloat16,1,4096,7168,0.0655,0.0022,0.8960,0.8637,103.74,896.3438,103.74
+NVIDIA L20,DeepSeek-V3,MoE_Down,moe,MoE expert down projection (~1 tokens/expert),3,1,bfloat16,1,7168,2048,0.0266,0.0012,1.1028,0.8635,127.72,1103.4616,127.72
+NVIDIA L20,DeepSeek-V3,QKV_Proj,attention,"Fused QKV projection (128 q_head, 128 kv_head)",4,1,bfloat16,4,49152,7168,0.9544,0.0055,2.9533,3.4538,85.51,738.8069,85.51
+NVIDIA L20,DeepSeek-V3,O_Proj,attention,Attention output projection,4,1,bfloat16,4,7168,7168,0.0778,0.0013,5.2817,3.4521,153.00,1321.8948,153.00
+NVIDIA L20,DeepSeek-V3,MoE_Gate_Up,moe,"MoE expert gate+up (top8/256, ~1 tokens/expert)",4,1,bfloat16,1,4096,7168,0.0655,0.0019,0.8960,0.8637,103.74,896.3438,103.74
+NVIDIA L20,DeepSeek-V3,MoE_Down,moe,MoE expert down projection (~1 tokens/expert),4,1,bfloat16,1,7168,2048,0.0267,0.0015,1.0988,0.8635,127.26,1099.4970,127.26
+NVIDIA L20,DeepSeek-V3,QKV_Proj,attention,"Fused QKV projection (128 q_head, 128 kv_head)",8,1,bfloat16,8,49152,7168,0.9554,0.0062,5.9003,6.9032,85.47,738.4866,85.47
+NVIDIA L20,DeepSeek-V3,O_Proj,attention,Attention output projection,8,1,bfloat16,8,7168,7168,0.0809,0.0010,10.1622,6.8966,147.35,1273.1140,147.35
+NVIDIA L20,DeepSeek-V3,MoE_Gate_Up,moe,"MoE expert gate+up (top8/256, ~1 tokens/expert)",8,1,bfloat16,1,4096,7168,0.0645,0.0038,0.9102,0.8637,105.39,910.5714,105.39
+NVIDIA L20,DeepSeek-V3,MoE_Down,moe,MoE expert down projection (~1 tokens/expert),8,1,bfloat16,1,7168,2048,0.0266,0.0010,1.1028,0.8635,127.72,1103.4616,127.72
+NVIDIA L20,DeepSeek-V3,QKV_Proj,attention,"Fused QKV projection (128 q_head, 128 kv_head)",16,1,bfloat16,16,49152,7168,0.9568,0.0065,11.7827,13.7887,85.45,738.3046,85.45
+NVIDIA L20,DeepSeek-V3,O_Proj,attention,Attention output projection,16,1,bfloat16,16,7168,7168,0.0952,0.0026,17.2649,13.7626,125.45,1083.8709,125.45
+NVIDIA L20,DeepSeek-V3,MoE_Gate_Up,moe,"MoE expert gate+up (top8/256, ~1 tokens/expert)",16,1,bfloat16,1,4096,7168,0.0650,0.0012,0.9028,0.8637,104.53,903.1793,104.53
+NVIDIA L20,DeepSeek-V3,MoE_Down,moe,MoE expert down projection (~1 tokens/expert),16,1,bfloat16,1,7168,2048,0.0267,0.0024,1.1001,0.8635,127.41,1100.8153,127.41
+NVIDIA L20,DeepSeek-V3,QKV_Proj,attention,"Fused QKV projection (128 q_head, 128 kv_head)",32,1,bfloat16,32,49152,7168,0.9733,0.0061,23.1669,27.5073,84.22,727.6675,84.22
+NVIDIA L20,DeepSeek-V3,O_Proj,attention,Attention output projection,32,1,bfloat16,32,7168,7168,0.0819,0.0033,40.1486,27.4033,146.51,1265.8473,146.51
+NVIDIA L20,DeepSeek-V3,MoE_Gate_Up,moe,"MoE expert gate+up (top8/256, ~1 tokens/expert)",32,1,bfloat16,1,4096,7168,0.0655,0.0053,0.8960,0.8637,103.74,896.3438,103.74
+NVIDIA L20,DeepSeek-V3,MoE_Down,moe,MoE expert down projection (~1 tokens/expert),32,1,bfloat16,1,7168,2048,0.0266,0.0024,1.1028,0.8635,127.72,1103.4616,127.72
+NVIDIA L20,DeepSeek-V3,QKV_Proj,attention,"Fused QKV projection (128 q_head, 128 kv_head)",64,1,bfloat16,64,49152,7168,0.9734,0.0046,46.3299,54.7360,84.64,731.3107,84.64
+NVIDIA L20,DeepSeek-V3,O_Proj,attention,Attention output projection,64,1,bfloat16,64,7168,7168,0.0870,0.0028,75.5592,54.3259,139.08,1201.6941,139.08
+NVIDIA L20,DeepSeek-V3,MoE_Gate_Up,moe,"MoE expert gate+up (top8/256, ~2 tokens/expert)",64,1,bfloat16,2,4096,7168,0.0440,0.0027,2.6672,1.7267,154.47,1334.6047,154.47
+NVIDIA L20,DeepSeek-V3,MoE_Down,moe,MoE expert down projection (~2 tokens/expert),64,1,bfloat16,2,7168,2048,0.0363,0.0014,1.6167,1.7258,93.68,809.3885,93.68
+NVIDIA L20,DeepSeek-V3,QKV_Proj,attention,"Fused QKV projection (128 q_head, 128 kv_head)",128,1,bfloat16,128,49152,7168,1.4341,0.0080,62.8921,108.3745,58.03,501.3981,58.03
+NVIDIA L20,DeepSeek-V3,O_Proj,attention,Attention output projection,128,1,bfloat16,128,7168,7168,0.1393,0.0056,94.4489,106.7785,88.45,764.2353,88.45
+NVIDIA L20,DeepSeek-V3,MoE_Gate_Up,moe,"MoE expert gate+up (top8/256, ~4 tokens/expert)",128,1,bfloat16,4,4096,7168,0.1116,0.0030,2.1044,3.4507,60.98,526.8991,60.98
+NVIDIA L20,DeepSeek-V3,MoE_Down,moe,MoE expert down projection (~4 tokens/expert),128,1,bfloat16,4,7168,2048,0.0359,0.0011,3.2739,3.4473,94.97,820.5245,94.97
+NVIDIA L20,DeepSeek-V3,QKV_Proj,attention,"Fused QKV projection (128 q_head, 128 kv_head)",256,1,bfloat16,256,49152,7168,1.7819,0.0071,101.2364,119.5000,84.72,411.6376,47.64
+NVIDIA L20,DeepSeek-V3,O_Proj,attention,Attention output projection,256,1,bfloat16,256,7168,7168,0.2564,0.0062,102.5809,119.5000,85.84,429.3287,49.69
+NVIDIA L20,DeepSeek-V3,MoE_Gate_Up,moe,"MoE expert gate+up (top8/256, ~8 tokens/expert)",256,1,bfloat16,8,4096,7168,0.1034,0.0043,4.5421,6.8909,65.91,569.5050,65.91
+NVIDIA L20,DeepSeek-V3,MoE_Down,moe,MoE expert down projection (~8 tokens/expert),256,1,bfloat16,8,7168,2048,0.0369,0.0013,6.3716,6.8775,92.64,800.4444,92.64
+NVIDIA L20,DeepSeek-V3,QKV_Proj,attention,"Fused QKV projection (128 q_head, 128 kv_head)",1024,1,bfloat16,1024,49152,7168,6.2490,0.0150,115.4679,119.5000,96.63,131.2197,15.19
+NVIDIA L20,DeepSeek-V3,O_Proj,attention,Attention output projection,1024,1,bfloat16,1024,7168,7168,0.9518,0.0069,110.5545,119.5000,92.51,138.8101,16.07
+NVIDIA L20,DeepSeek-V3,MoE_Gate_Up,moe,"MoE expert gate+up (top8/256, ~32 tokens/expert)",1024,1,bfloat16,32,4096,7168,0.0584,0.0035,32.1931,27.3127,117.87,1018.3859,117.87
+NVIDIA L20,DeepSeek-V3,MoE_Down,moe,MoE expert down projection (~32 tokens/expert),1024,1,bfloat16,32,7168,2048,0.0379,0.0008,24.7974,27.1035,91.49,790.4865,91.49
+NVIDIA L20,DeepSeek-V3,QKV_Proj,attention,"Fused QKV projection (128 q_head, 128 kv_head)",4096,1,bfloat16,4096,49152,7168,24.7117,0.0208,116.7957,119.5000,97.74,47.1848,5.46
+NVIDIA L20,DeepSeek-V3,O_Proj,attention,Attention output projection,4096,1,bfloat16,4096,7168,7168,3.6828,0.0109,114.2899,119.5000,95.64,59.7917,6.92
+NVIDIA L20,DeepSeek-V3,MoE_Gate_Up,moe,"MoE expert gate+up (top8/256, ~128 tokens/expert)",4096,1,bfloat16,128,4096,7168,0.0875,0.0019,85.8797,105.4154,81.47,703.8830,81.47
+NVIDIA L20,DeepSeek-V3,MoE_Down,moe,MoE expert down projection (~128 tokens/expert),4096,1,bfloat16,128,7168,2048,0.0502,0.0023,74.8983,102.3661,73.17,632.1633,73.17
+NVIDIA L20,DeepSeek-V3,QKV_Proj,attention,"Fused QKV projection (128 q_head, 128 kv_head)",4099,1,bfloat16,4099,49152,7168,26.0582,0.0858,110.8414,119.5000,92.75,44.7595,5.18
+NVIDIA L20,DeepSeek-V3,O_Proj,attention,Attention output projection,4099,1,bfloat16,4099,7168,7168,3.7099,0.0071,113.5395,119.5000,95.01,59.3788,6.87
+NVIDIA L20,DeepSeek-V3,MoE_Gate_Up,moe,"MoE expert gate+up (top8/256, ~128 tokens/expert)",4099,1,bfloat16,128,4096,7168,0.0870,0.0014,86.3533,105.4154,81.92,707.7647,81.92
+NVIDIA L20,DeepSeek-V3,MoE_Down,moe,MoE expert down projection (~128 tokens/expert),4099,1,bfloat16,128,7168,2048,0.0502,0.0014,74.8983,102.3661,73.17,632.1633,73.17
+NVIDIA L20,DeepSeek-V3,QKV_Proj,attention,"Fused QKV projection (128 q_head, 128 kv_head)",5000,1,bfloat16,5000,49152,7168,30.6191,0.0783,115.0658,119.5000,96.29,41.4069,4.79
+NVIDIA L20,DeepSeek-V3,O_Proj,attention,Attention output projection,5000,1,bfloat16,5000,7168,7168,4.5066,0.0189,114.0105,119.5000,95.41,54.6130,6.32
+NVIDIA L20,DeepSeek-V3,MoE_Gate_Up,moe,"MoE expert gate+up (top8/256, ~156 tokens/expert)",5000,1,bfloat16,156,4096,7168,0.1198,0.0019,76.4587,119.5000,63.98,519.4530,60.12
+NVIDIA L20,DeepSeek-V3,MoE_Down,moe,MoE expert down projection (~156 tokens/expert),5000,1,bfloat16,156,7168,2048,0.0676,0.0015,67.7702,119.5000,56.71,476.9697,55.20

@@ -5,7 +5,7 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONFIG=${1:-"${SCRIPT_DIR}/config/deepseek.json"}
+CONFIG=${1:-"${SCRIPT_DIR}/config/basic.json"}
 OUTPUT_DIR="${SCRIPT_DIR}/results"
 WORKSPACE_DIR="$(dirname "${SCRIPT_DIR}")"
 export PYTHONPATH="${WORKSPACE_DIR}:${PYTHONPATH}"

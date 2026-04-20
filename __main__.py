@@ -6,15 +6,9 @@ Usage:
     # Run benchmarks defined in config file
     python -m xpu_benchmark --config config/deepseek.json
 
-    # Run and save results to output directory
-    python -m xpu_benchmark --config config/deepseek.json --output results/
-
-    # Use CUDA Events timing instead of CUPTI
-    python -m xpu_benchmark --config config/deepseek.json --use_cuda_events
-
 Config file format (JSON):
     Only the sections present in config will be executed.
-    Supported sections: "gemm", "membw", "llm_gemm"
+    Supported sections: "gemm", "memory", "llm_gemm", "comm"
 
     Example:
     {
@@ -24,7 +18,7 @@ Config file format (JSON):
             "dtypes": ["float32", "bfloat16"],
             "sizes": [[4096, 4096, 4096], [1, 4096, 4096]]
         },
-        "membw": {
+        "memory": {
             "num_iters": 50,
             "dry_run_iters": 10,
             "dtypes": ["float32"],
@@ -37,6 +31,13 @@ Config file format (JSON):
             "tp": 1,
             "num_iters": 30,
             "dry_run_iters": 5
+        },
+        "comm": {
+            "num_iters": 50,
+            "dry_run_iters": 10,
+            "world_size": [2, 4, 8],
+            "operations": ["allreduce", "allgather", "all2all", "all2allv"],
+            "dtype": "bfloat16"
         }
     }
 """
@@ -51,7 +52,7 @@ from datetime import datetime
 # Allow running as script or module
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from xpu_benchmark import GemmBenchmark, MemBwBenchmark, LLMGemmBenchmark, LLM_MODELS
+from xpu_benchmark import GemmBenchmark, MemBwBenchmark, LLMGemmBenchmark, LLM_MODELS, CommBenchmark
 
 
 def load_config(config_path: str) -> dict:
@@ -90,46 +91,11 @@ def run_gemm(config: dict, output_dir: str = None, use_cuda_events: bool = False
     return results
 
 
-def run_membw(config: dict, output_dir: str = None, use_cuda_events: bool = False):
-    """Run memory bandwidth benchmark based on config."""
-    cfg = config['membw']
-    sizes_mb = cfg.get('sizes_mb', None)
-    patterns = cfg.get('patterns', ['seq_copy', 'strided_copy'])
-    dtypes = cfg.get('dtypes', ['float32'])
-    num_iters = cfg.get('num_iters', 50)
-    dry_run_iters = cfg.get('dry_run_iters', 10)
-    block_counts = cfg.get('block_counts', None)
-
-    bench = MemBwBenchmark(
-        num_iters=num_iters,
-        dry_run_iters=dry_run_iters,
-        enable_cupti=not use_cuda_events,
-    )
-
-    results = bench.run(
-        sizes_mb=sizes_mb,
-        patterns=patterns,
-        dtypes=dtypes,
-        block_counts=block_counts,
-    )
-    bench.print_summary(results)
-
-    if output_dir:
-        os.makedirs(output_dir, exist_ok=True)
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        csv_path = os.path.join(output_dir, f'membw_{timestamp}.csv')
-        bench.save_csv(results, csv_path)
-        plot_path = os.path.join(output_dir, f'membw_heatmap_{timestamp}.png')
-        bench.plot(results, plot_path)
-
-    return results
-
-
 def run_llm_gemm(config: dict, output_dir: str = None, use_cuda_events: bool = False):
     """Run LLM GEMM benchmark (QKV, Proj, FFN, MoE workloads) based on config."""
     cfg = config['llm_gemm']
     model_name = cfg.get('model', 'deepseek-v3')
-    batch_sizes = cfg.get('batch_sizes', None)
+    batch_sizes = cfg.get('batch_sizes', [1])
     dtypes = cfg.get('dtypes', ['bfloat16'])
     tp = cfg.get('tp', 1)
     num_iters = cfg.get('num_iters', 30)
@@ -155,7 +121,100 @@ def run_llm_gemm(config: dict, output_dir: str = None, use_cuda_events: bool = F
         csv_path = os.path.join(output_dir, f'llm_gemm_{model_name}_{timestamp}.csv')
         bench.save_csv(results, csv_path)
         plot_path = os.path.join(output_dir, f'llm_gemm_{model_name}_{timestamp}.png')
-        bench.plot_batch_tflops(results, plot_path)
+        bench.plot_batch_tflops_curve(results, plot_path)
+
+    return results
+
+
+def run_membw(config: dict, output_dir: str = None, use_cuda_events: bool = False):
+    """Run memory bandwidth benchmark based on config."""
+    cfg = config['memory']
+    sizes_mb = cfg.get('sizes_mb', None)
+    patterns = cfg.get('patterns', ['seq_copy', 'strided_copy'])
+    dtypes = cfg.get('dtypes', ['float32'])
+    num_iters = cfg.get('num_iters', 50)
+    dry_run_iters = cfg.get('dry_run_iters', 10)
+
+    bench = MemBwBenchmark(
+        num_iters=num_iters,
+        dry_run_iters=dry_run_iters,
+        enable_cupti=not use_cuda_events,
+    )
+
+    results = bench.run(
+        sizes_mb=sizes_mb,
+        patterns=patterns,
+        dtypes=dtypes,
+    )
+    bench.print_summary(results)
+
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        csv_path = os.path.join(output_dir, f'membw_{timestamp}.csv')
+        bench.save_csv(results, csv_path)
+        plot_path = os.path.join(output_dir, f'membw_{timestamp}.png')
+        bench.plot_size_bw_curve(results, plot_path)
+
+    return results
+
+
+def run_comm(config: dict, output_dir: str = None):
+    """Run communication bandwidth benchmark based on config.
+
+    注意：comm benchmark 需要通过 torchrun 启动多进程环境。
+    如果当前未处于分布式环境，会尝试初始化单卡模式。
+
+    config['comm'] 支持的参数：
+        - num_iters: 测量迭代次数 (default: 50)
+        - dry_run_iters: 预热迭代次数 (default: 10)
+        - operations: 通信操作列表 (default: all four)
+        - dtype: 数据类型 (default: bfloat16)
+        - sizes_bytes: 数据量列表 (default: 4KB~512MB)
+        - world_size: 要测试的 rank 数，支持整数或列表
+                      例如: 8 或 [1, 2, 4, 8]
+    """
+    cfg = config['comm']
+    num_iters = cfg.get('num_iters', 50)
+    dry_run_iters = cfg.get('dry_run_iters', 10)
+    operations = cfg.get('operations', ['allreduce', 'allgather', 'all2all', 'all2allv'])
+    dtype = cfg.get('dtype', 'bfloat16')
+    sizes_bytes = cfg.get('sizes_bytes', None)
+
+    # 解析 world_size 参数：支持整数或列表
+    world_size_cfg = cfg.get('world_size', None)
+    if world_size_cfg is not None:
+        if isinstance(world_size_cfg, int):
+            world_sizes = [world_size_cfg]
+        elif isinstance(world_size_cfg, list):
+            world_sizes = world_size_cfg
+        else:
+            world_sizes = None
+    else:
+        world_sizes = None
+
+    bench = CommBenchmark(
+        num_iters=num_iters,
+        dry_run_iters=dry_run_iters,
+    )
+
+    results = bench.run(
+        sizes_bytes=sizes_bytes,
+        operations=operations,
+        dtype=dtype,
+        world_sizes=world_sizes,
+    )
+
+    if bench.rank == 0:
+        bench.print_summary(results)
+
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            csv_path = os.path.join(output_dir, f'comm_bw_{timestamp}.csv')
+            bench.save_csv(results, csv_path)
+            plot_path = os.path.join(output_dir, f'comm_bw_{timestamp}.png')
+            bench.plot(results, plot_path)
 
     return results
 
@@ -223,7 +282,7 @@ def main():
         sys.exit(1)
 
     # Validate config has at least one benchmark section
-    valid_sections = ['gemm', 'membw', 'llm_gemm']
+    valid_sections = ['gemm', 'memory', 'llm_gemm', 'comm']
     found_sections = [s for s in valid_sections if s in config]
     if not found_sections:
         print(f"[ERROR] Config must contain at least one benchmark section: {valid_sections}")
@@ -235,11 +294,14 @@ def main():
     if 'gemm' in config:
         run_gemm(config, output_dir=args.output, use_cuda_events=args.use_cuda_events)
 
-    if 'membw' in config:
-        run_membw(config, output_dir=args.output, use_cuda_events=args.use_cuda_events)
-
     if 'llm_gemm' in config:
         run_llm_gemm(config, output_dir=args.output, use_cuda_events=args.use_cuda_events)
+
+    if 'memory' in config:
+        run_membw(config, output_dir=args.output, use_cuda_events=args.use_cuda_events)
+
+    if 'comm' in config:
+        run_comm(config, output_dir=args.output)
 
     print("\n[INFO] Benchmark complete.")
 

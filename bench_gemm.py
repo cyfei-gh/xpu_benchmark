@@ -41,18 +41,18 @@ class GemmResult:
     mbu: float    # Bandwidth utilization (0~1)
     device_name: str
 
-    def __str__(self) -> str:
-        mfu_str = f"{self.mfu * 100:.1f}%" if self.mfu > 0 else "N/A"
-        bw_str = f"{self.mbu * 100:.1f}%" if self.mbu > 0 else "N/A"
-        theory_t_str = f"{self.theory_time_ms:.3f}" if self.theory_time_ms > 0 else "N/A"
-        return (
-            f"M={self.m:6d} N={self.n:6d} K={self.k:6d} | "
-            f"dtype={self.dtype:<12s} | "
-            f"time={self.median_time_ms:.3f}±{self.std_time_ms:.3f}ms | "
-            f"theory_time={theory_t_str}ms | "
-            f"TFLOPS={self.tflops:.2f} theory={self.theory_tflops:.2f} (MFU={mfu_str}) | "
-            f"BW={self.bandwidth_gbps:.1f}GB/s (util={bw_str})"
-        )
+    # def __str__(self) -> str:
+    #     mfu_str = f"{self.mfu * 100:.1f}%" if self.mfu > 0 else "N/A"
+    #     bw_str = f"{self.mbu * 100:.1f}%" if self.mbu > 0 else "N/A"
+    #     theory_t_str = f"{self.theory_time_ms:.3f}" if self.theory_time_ms > 0 else "N/A"
+    #     return (
+    #         f"M={self.m:6d} N={self.n:6d} K={self.k:6d} | "
+    #         f"dtype={self.dtype:<12s} | "
+    #         f"time={self.median_time_ms:.3f}±{self.std_time_ms:.3f}ms | "
+    #         f"theory_time={theory_t_str}ms | "
+    #         f"TFLOPS={self.tflops:.2f} theory={self.theory_tflops:.2f} (MFU={mfu_str}) | "
+    #         f"BW={self.bandwidth_gbps:.1f}GB/s (util={bw_str})"
+    #     )
 
 
 def _compute_gemm_flops(m: int, n: int, k: int) -> int:
@@ -532,15 +532,15 @@ class LLMGemmResult:
     mbu: float
     device_name: str
 
-    def __str__(self) -> str:
-        mfu_str = f"{self.mfu * 100:.1f}%" if self.mfu > 0 else "N/A"
-        return (
-            f"[{self.model_name}] {self.workload_name:<14} batch={self.batch_size:>6} | "
-            f"M={self.m:>6} N={self.n:>6} K={self.k:>6} | "
-            f"dtype={self.dtype:<10} | "
-            f"time={self.median_time_ms:.3f}±{self.std_time_ms:.3f}ms | "
-            f"TFLOPS={self.tflops:.2f} (MFU={mfu_str})"
-        )
+    # def __str__(self) -> str:
+    #     mfu_str = f"{self.mfu * 100:.1f}%" if self.mfu > 0 else "N/A"
+    #     return (
+    #         f"[{self.model_name}] {self.workload_name:<14} batch={self.batch_size:>6} | "
+    #         f"M={self.m:>6} N={self.n:>6} K={self.k:>6} | "
+    #         f"dtype={self.dtype:<10} | "
+    #         f"time={self.median_time_ms:.3f}±{self.std_time_ms:.3f}ms | "
+    #         f"TFLOPS={self.tflops:.2f} (MFU={mfu_str})"
+    #     )
 
 
 class LLMGemmBenchmark:
@@ -625,7 +625,7 @@ class LLMGemmBenchmark:
         for dtype_str in dtypes:
             print(f"\n--- dtype: {dtype_str} ---")
             print(f"{'workload':<14} {'batch':>6} | {'M':>6} {'N':>6} {'K':>6} | "
-                  f"{'time(ms)':>12} | {'TFLOPS':>8} | {'theory':>8} | {'MFU':>7} | "
+                  f"{'time(ms)':>12} | {'TFLOPS':>8} | {'theory(ms)':>8} | {'MFU':>7} | "
                   f"{'BW(GB/s)':>10} | {'MBU':>7}")
             print(f"{'-'*120}")
 
@@ -706,174 +706,6 @@ class LLMGemmBenchmark:
                       f"worst={worst.tflops:.2f} TFLOPS (batch={worst.batch_size}) | "
                       f"best MFU={best.mfu*100:.1f}%")
 
-    def plot_batch_tflops(
-        self,
-        results: List[LLMGemmResult],
-        output_path: str = 'llm_gemm_batch_tflops.png',
-        dtype_filter: str = None,
-    ):
-        """
-        Plot batch_size vs TFLOPS curves for each workload type.
-
-        Generates a multi-panel figure with one subplot per workload,
-        showing how TFLOPS scales with batch_size. Includes theoretical
-        peak line for reference.
-
-        Args:
-            results: List of LLMGemmResult from run().
-            output_path: Path to save the figure.
-            dtype_filter: If set, only plot results for this dtype.
-        """
-        try:
-            import matplotlib
-            matplotlib.use('Agg')
-            import matplotlib.pyplot as plt
-            from matplotlib.ticker import ScalarFormatter
-        except ImportError:
-            print("[WARNING] matplotlib not installed. Skipping plot. "
-                  "Install with: pip install matplotlib")
-            return
-
-        if dtype_filter:
-            results = [r for r in results if r.dtype == dtype_filter]
-
-        if not results:
-            print("[WARNING] No results to plot.")
-            return
-
-        model_name = results[0].model_name
-
-        # Group by dtype
-        dtypes = sorted(set(r.dtype for r in results))
-
-        for dtype_str in dtypes:
-            dtype_results = [r for r in results if r.dtype == dtype_str]
-
-            # Get unique workload names preserving order
-            seen = set()
-            workload_names = []
-            for r in dtype_results:
-                if r.workload_name not in seen:
-                    seen.add(r.workload_name)
-                    workload_names.append(r.workload_name)
-
-            n_workloads = len(workload_names)
-            if n_workloads == 0:
-                continue
-
-            # Layout: up to 3 columns
-            n_cols = min(3, n_workloads)
-            n_rows = (n_workloads + n_cols - 1) // n_cols
-
-            fig, axes = plt.subplots(
-                n_rows, n_cols,
-                figsize=(7 * n_cols, 5 * n_rows),
-                squeeze=False,
-            )
-
-            # Category -> color mapping
-            category_colors = {
-                'attention': '#2196F3',  # blue
-                'ffn': '#4CAF50',        # green
-                'moe': '#FF9800',        # orange
-            }
-            category_markers = {
-                'attention': 'o',
-                'ffn': 's',
-                'moe': 'D',
-            }
-
-            # Get theoretical peak for reference
-            hw_tflops = 0.0
-            if dtype_results:
-                hw_tflops = get_peak_tflops(self.device_name, dtype_str)
-
-            for idx, wl_name in enumerate(workload_names):
-                row, col = divmod(idx, n_cols)
-                ax = axes[row][col]
-
-                wl_results = sorted(
-                    [r for r in dtype_results if r.workload_name == wl_name],
-                    key=lambda r: r.batch_size,
-                )
-
-                if not wl_results:
-                    continue
-
-                batch_sizes = [r.batch_size for r in wl_results]
-                tflops_vals = [r.tflops for r in wl_results]
-                theory_vals = [r.theory_tflops for r in wl_results]
-                mfu_vals = [r.mfu * 100 for r in wl_results]
-
-                cat = wl_results[0].category
-                color = category_colors.get(cat, '#666666')
-                marker = category_markers.get(cat, 'o')
-
-                # Plot actual TFLOPS
-                ax.plot(batch_sizes, tflops_vals,
-                        marker=marker, color=color, linewidth=2,
-                        markersize=6, label='Actual TFLOPS', zorder=3)
-
-                # Plot theory TFLOPS (roofline)
-                ax.plot(batch_sizes, theory_vals,
-                        marker='', color=color, linewidth=1.5,
-                        linestyle='--', alpha=0.6, label='Roofline TFLOPS', zorder=2)
-
-                # Plot hardware peak line
-                if hw_tflops > 0:
-                    ax.axhline(y=hw_tflops, color='red', linewidth=1,
-                               linestyle=':', alpha=0.5, label=f'HW Peak ({hw_tflops:.0f})')
-
-                # Annotate MFU on data points
-                for i, (bs, tf, mfu) in enumerate(zip(batch_sizes, tflops_vals, mfu_vals)):
-                    if i % max(1, len(batch_sizes) // 6) == 0 or i == len(batch_sizes) - 1:
-                        ax.annotate(
-                            f'{mfu:.0f}%',
-                            (bs, tf),
-                            textcoords="offset points",
-                            xytext=(0, 10),
-                            fontsize=7,
-                            ha='center',
-                            color='gray',
-                        )
-
-                ax.set_xscale('log', base=2)
-                ax.xaxis.set_major_formatter(ScalarFormatter())
-                ax.set_xlabel('Batch Size (tokens)', fontsize=10)
-                ax.set_ylabel('TFLOPS', fontsize=10)
-
-                # Build title with matrix shape info
-                desc = wl_results[0].description
-                sample = wl_results[0]
-                shape_info = f"N={sample.n}, K={sample.k}"
-                ax.set_title(f'{wl_name}\n({shape_info})', fontsize=11, fontweight='bold')
-
-                ax.legend(fontsize=8, loc='lower right')
-                ax.grid(True, alpha=0.3)
-                ax.tick_params(labelsize=8)
-
-            # Hide empty subplots
-            for idx in range(n_workloads, n_rows * n_cols):
-                row, col = divmod(idx, n_cols)
-                axes[row][col].set_visible(False)
-
-            fig.suptitle(
-                f'LLM GEMM Benchmark: {model_name} | {dtype_str} | {self.device_name}',
-                fontsize=14, fontweight='bold', y=1.02,
-            )
-            plt.tight_layout()
-
-            # Adjust output path for multi-dtype
-            if len(dtypes) > 1:
-                base, ext = output_path.rsplit('.', 1)
-                save_path = f"{base}_{dtype_str}.{ext}"
-            else:
-                save_path = output_path
-
-            plt.savefig(save_path, dpi=150, bbox_inches='tight')
-            plt.close()
-            print(f"[INFO] Batch-TFLOPS plot saved to: {save_path}")
-
     def save_csv(self, results: List[LLMGemmResult], path: str):
         """Save LLM GEMM benchmark results to CSV file."""
         try:
@@ -902,3 +734,151 @@ class LLMGemmBenchmark:
             print(f"[INFO] LLM GEMM results saved to: {path}")
         except Exception as e:
             print(f"[ERROR] Failed to save CSV: {e}")
+
+    def plot_batch_tflops_curve(
+        self,
+        results: List[LLMGemmResult],
+        output_path: str = 'llm_gemm_combined_tflops.png',
+        dtype_filter: str = None,
+        workload_filter: List[str] = None,
+    ):
+        """
+        在一张图中绘制多个 workload 的 batch_size vs TFLOPS 曲线，并标注 HW Peak TFLOPS。
+
+        默认绘制 QKV_Proj、O_Proj、MoE_Gate_Up、MoE_Down 四条曲线。
+
+        Args:
+            results: List of LLMGemmResult from run().
+            output_path: 输出图片路径。
+            dtype_filter: 仅绘制指定 dtype 的结果。
+            workload_filter: 指定要绘制的 workload 名称列表。
+                             默认为 ['QKV_Proj', 'O_Proj', 'MoE_Gate_Up', 'MoE_Down']。
+        """
+        try:
+            import matplotlib
+            matplotlib.use('Agg')
+            import matplotlib.pyplot as plt
+            from matplotlib.ticker import ScalarFormatter
+        except ImportError:
+            print("[WARNING] matplotlib not installed. Skipping plot. "
+                  "Install with: pip install matplotlib")
+            return
+
+        if dtype_filter:
+            results = [r for r in results if r.dtype == dtype_filter]
+
+        if not results:
+            print("[WARNING] No results to plot.")
+            return
+
+        # 默认绘制的 workload
+        if workload_filter is None:
+            workload_filter = ['QKV_Proj', 'O_Proj', 'MoE_Gate_Up', 'MoE_Down']
+
+        model_name = results[0].model_name
+        dtypes = sorted(set(r.dtype for r in results))
+
+        # 每种 workload 的颜色和标记
+        style_map = {
+            'QKV_Proj':     {'color': '#2196F3', 'marker': 'o', 'label': 'QKV Proj'},
+            'O_Proj':       {'color': '#4CAF50', 'marker': 's', 'label': 'O Proj'},
+            'MoE_Gate_Up':  {'color': '#FF9800', 'marker': 'D', 'label': 'MoE Gate+Up'},
+            'MoE_Down':     {'color': '#9C27B0', 'marker': '^', 'label': 'MoE Down'},
+            'Shared_Gate_Up': {'color': '#FF9800', 'marker': 'D', 'label': 'Gate+Up (Dense)'},
+            'Shared_Down':  {'color': '#9C27B0', 'marker': '^', 'label': 'Down (Dense)'},
+        }
+        # 备用样式
+        fallback_colors = ['#E91E63', '#00BCD4', '#795548', '#607D8B']
+        fallback_markers = ['v', '<', '>', 'p']
+
+        for dtype_str in dtypes:
+            dtype_results = [r for r in results if r.dtype == dtype_str]
+
+            # 获取硬件峰值 TFLOPS
+            hw_tflops = get_peak_tflops(self.device_name, dtype_str)
+
+            fig, ax = plt.subplots(figsize=(12, 7))
+
+            fallback_idx = 0
+            for wl_name in workload_filter:
+                wl_results = sorted(
+                    [r for r in dtype_results if r.workload_name == wl_name],
+                    key=lambda r: r.batch_size,
+                )
+                if not wl_results:
+                    continue
+
+                batch_sizes = [r.batch_size for r in wl_results]
+                tflops_vals = [r.tflops for r in wl_results]
+                mfu_vals = [r.mfu * 100 for r in wl_results]
+
+                # 获取样式
+                if wl_name in style_map:
+                    style = style_map[wl_name]
+                else:
+                    style = {
+                        'color': fallback_colors[fallback_idx % len(fallback_colors)],
+                        'marker': fallback_markers[fallback_idx % len(fallback_markers)],
+                        'label': wl_name,
+                    }
+                    fallback_idx += 1
+
+                # 绘制 TFLOPS 曲线
+                ax.plot(
+                    batch_sizes, tflops_vals,
+                    marker=style['marker'], color=style['color'],
+                    linewidth=2.2, markersize=7,
+                    label=style['label'], zorder=3,
+                )
+
+                # 在关键数据点标注 MFU
+                for i, (bs, tf, mfu) in enumerate(zip(batch_sizes, tflops_vals, mfu_vals)):
+                    # 仅标注首尾和中间几个点，避免拥挤
+                    if i % max(1, len(batch_sizes) // 5) == 0 or i == len(batch_sizes) - 1:
+                        ax.annotate(
+                            f'{mfu:.0f}%',
+                            (bs, tf),
+                            textcoords="offset points",
+                            xytext=(0, 10),
+                            fontsize=7,
+                            ha='center',
+                            color=style['color'],
+                            alpha=0.8,
+                        )
+
+            # 绘制 HW Peak TFLOPS 水平线
+            if hw_tflops > 0:
+                ax.axhline(
+                    y=hw_tflops, color='red', linewidth=2,
+                    linestyle='--', alpha=0.7,
+                    label=f'HW Peak ({hw_tflops:.0f} TFLOPS)',
+                    zorder=2,
+                )
+
+            ax.set_xscale('log', base=2)
+            ax.xaxis.set_major_formatter(ScalarFormatter())
+            ax.set_xlabel('Batch Size (tokens)', fontsize=12)
+            ax.set_ylabel('TFLOPS', fontsize=12)
+            ax.set_title(
+                f'LLM GEMM Benchmark: {model_name} | {dtype_str} | {self.device_name}',
+                fontsize=13, fontweight='bold',
+            )
+            ax.legend(fontsize=10, loc='lower right')
+            ax.grid(True, alpha=0.3)
+            ax.tick_params(labelsize=9)
+
+            # 设置 y 轴从 0 开始
+            ax.set_ylim(bottom=0)
+
+            plt.tight_layout()
+
+            # 多 dtype 时区分文件名
+            if len(dtypes) > 1:
+                base, ext = output_path.rsplit('.', 1)
+                save_path = f"{base}_{dtype_str}.{ext}"
+            else:
+                save_path = output_path
+
+            plt.savefig(save_path, dpi=150, bbox_inches='tight')
+            plt.close()
+            print(f"[INFO] Combined batch-TFLOPS plot saved to: {save_path}")

@@ -1,25 +1,31 @@
 {
     "gemm": {
-        "num_iters": 30,
+        "num_iters": 20,
         "dry_run_iters": 5,
-        "dtypes": ["bfloat16", "float16"],
+        "dtypes": ["float32", "bfloat16", "float16", "int8"],
         "sizes": [
             [1, 4096, 4096],
             [4, 4096, 4096],
             [16, 4096, 4096],
             [64, 4096, 4096],
             [128, 4096, 4096],
+            [512, 4096, 4096],
             [1024, 4096, 4096],
             [2048, 4096, 4096],
             [4096, 4096, 4096],
-            [64, 8192, 1024],
-            [4096, 8192, 1024]
+            [8192, 8192, 8192]
         ]
     },
-    "membw": {
-        "num_iters": 30,
+    "memory": {
+        "num_iters": 20,
         "dry_run_iters": 5,
-        "dtypes": ["float32"],
+        "dtypes": ["float32", "bfloat16"],
         "patterns": ["seq_copy", "strided_copy"]
+    },
+    "comm": {
+        "num_iters": 20,
+        "dry_run_iters": 5,
+        "operations": ["allreduce", "allgather", "all2all", "all2allv"],
+        "dtype": "bfloat16"
     }
 }

@@ -1,0 +1,15 @@
+{
+    "deepseek_gemm": {
+        "num_iters": 30,
+        "dry_run_iters": 5,
+        "dtype": "bfloat16",
+        "shapes": {
+            "QKV":      [2112, 7168],
+            "Proj":     [7168, 2048],
+            "Moe_up":   [4096, 7168],
+            "Moe_down": [7168, 2048]
+        },
+        "batch_sizes": [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096],
+        "plot_ops": ["QKV", "Proj"]
+    }
+}

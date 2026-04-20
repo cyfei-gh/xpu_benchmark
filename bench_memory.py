@@ -19,6 +19,7 @@ import torch
 import triton
 import triton.language as tl
 import numpy as np
+import os
 from typing import List, Dict, Optional, Tuple
 from dataclasses import dataclass
 
@@ -31,19 +32,41 @@ from .hw_spec import get_peak_bandwidth, get_l2_cache_size
 # ===================================================================
 
 def _get_autotune_configs():
-    """生成 autotune 候选配置：不同 BLOCK_SIZE 和 num_warps 组合。"""
+    """生成 autotune 候选配置。
+
+    调优维度：
+    - BLOCK_SIZE:  每个 program 处理的元素数，覆盖 1K~64K 以适应不同数据规模
+    - num_warps:   每个 program 的 warp 数（1 warp = 32 threads），影响并行度、
+                   延迟隐藏能力和每个 thread 的工作量（后者决定能否向量化 load）
+    - num_stages:  软件流水深度，对 memory-bound kernel 能显著提升带宽利用率
+
+    剪枝规则：
+    - 每个 thread 至少处理 2 个元素（BLOCK_SIZE >= num_warps * 32 * 2），
+      否则向量化 load 的收益会被吃掉；这也自动过滤了一些明显劣配。
+    """
+    block_sizes = [128, 1024, 8192] #[256, 1024, 4096, 16384, 65536]
+    warp_options = [4] #[4, 8]
+    stage_options = [3] #[2, 3]
+
     configs = []
-    for block_size in [1024, 2048, 4096, 8192, 16384, 32768, 65536]:
-        for num_warps in [4, 8, 16]:
-            # num_warps * 32 (warp_size) 不能超过 BLOCK_SIZE
-            if num_warps * 32 <= block_size:
+    for block_size in block_sizes:
+        for num_warps in warp_options:
+            # 要求每个 thread 至少处理 2 个元素，便于生成向量化 load/store
+            if block_size < num_warps * 32 * 2:
+                continue
+            for num_stages in stage_options:
                 configs.append(
                     triton.Config(
                         {'BLOCK_SIZE': block_size},
                         num_warps=num_warps,
+                        num_stages=num_stages,
                     )
                 )
     return configs
+
+
+# 预先计算一次，避免多个 kernel 各自重复构造
+_AUTOTUNE_CONFIGS = _get_autotune_configs()
 
 
 # ===================================================================
@@ -79,7 +102,7 @@ class MemBwResult:
 # Triton kernels (with autotune)
 # ===================================================================
 
-@triton.autotune(configs=_get_autotune_configs(), key=['n_elements'])
+@triton.autotune(configs=_AUTOTUNE_CONFIGS, key=["n_elements"])
 @triton.jit
 def _seq_copy_kernel(
     src_ptr, dst_ptr,
@@ -94,7 +117,7 @@ def _seq_copy_kernel(
     tl.store(dst_ptr + offsets, data, mask=mask)
 
 
-@triton.autotune(configs=_get_autotune_configs(), key=['n_elements'])
+@triton.autotune(configs=_AUTOTUNE_CONFIGS, key=["n_elements"])
 @triton.jit
 def _seq_read_kernel(
     src_ptr, out_ptr,
@@ -110,7 +133,7 @@ def _seq_read_kernel(
     tl.atomic_add(out_ptr, block_sum)
 
 
-@triton.autotune(configs=_get_autotune_configs(), key=['n_elements'])
+@triton.autotune(configs=_AUTOTUNE_CONFIGS, key=["n_elements"])
 @triton.jit
 def _seq_write_kernel(
     dst_ptr,
@@ -124,7 +147,7 @@ def _seq_write_kernel(
     tl.store(dst_ptr + offsets, 1.0, mask=mask)
 
 
-@triton.autotune(configs=_get_autotune_configs(), key=['n_elements'])
+@triton.autotune(configs=_AUTOTUNE_CONFIGS, key=["n_elements"])
 @triton.jit
 def _strided_copy_kernel(
     src_ptr, dst_ptr,
@@ -141,7 +164,7 @@ def _strided_copy_kernel(
     tl.store(dst_ptr + idx, data, mask=mask)
 
 
-@triton.autotune(configs=_get_autotune_configs(), key=['n_elements'])
+@triton.autotune(configs=_AUTOTUNE_CONFIGS, key=["n_elements"])
 @triton.jit
 def _strided_read_kernel(
     src_ptr, out_ptr,
@@ -426,8 +449,8 @@ class MemBwBenchmark:
               f"{'time(ms)':>12} | {'BW(GB/s)':>10} | {'util':>7} | {'L2?':>4}")
         print(f"{'-'*100}")
 
-        for dtype_str in dtypes:
-            for pattern in patterns:
+        for pattern in patterns:
+            for dtype_str in dtypes:
                 for size_mb in sizes_mb:
                     result = self.run_single(size_mb, pattern, dtype_str)
                     if result is not None:
@@ -485,17 +508,20 @@ class MemBwBenchmark:
                 if best.utilization > 0:
                     print(f"  Best utilization      : {best.utilization*100:.1f}%")
 
-    def plot(
+    def plot_size_bw_curve(
         self,
         results: List[MemBwResult],
         output_path: str = 'membw_curve.png',
         pattern_filter: List[str] = None,
     ):
         """
-        在一张图上绘制不同 pattern 的 size-BW 曲线。
+        在一张图上绘制不同 pattern × 不同 dtype 的 size-BW 曲线。
 
-        X 轴为 data size (MB, log scale)，Y 轴为 bandwidth (GB/s)。
-        用竖线标注 L2 cache 边界，用水平虚线标注理论峰值带宽。
+        - X 轴: data size (MB, log scale)
+        - Y 轴: bandwidth (GB/s)
+        - 颜色: 区分 pattern（seq_copy / strided_copy 等）
+        - 线型 + 标记: 区分 dtype（float32 / float16 / bfloat16）
+        - 竖线标注 L2 cache 边界；水平虚线标注理论峰值带宽
 
         Args:
             results: List of MemBwResult from run().
@@ -515,57 +541,74 @@ class MemBwBenchmark:
             print("[WARNING] No results to plot.")
             return
 
+        dtypes = sorted(set(r.dtype for r in results))
         patterns = sorted(set(r.pattern for r in results))
         if pattern_filter:
             patterns = [p for p in patterns if p in pattern_filter]
 
-        if not patterns:
-            print("[WARNING] No matching patterns found for plotting.")
+        if not patterns or not dtypes:
+            print("[WARNING] No matching patterns or dtypes found for plotting.")
             return
 
-        # 配色和标记样式
-        style_map = {
-            'seq_copy':     {'color': '#2196F3', 'marker': 'o', 'label': 'Sequential Copy (R+W)'},
-            'seq_read':     {'color': '#4CAF50', 'marker': 's', 'label': 'Sequential Read'},
-            'seq_write':    {'color': '#FF9800', 'marker': '^', 'label': 'Sequential Write'},
-            'strided_copy': {'color': '#F44336', 'marker': 'D', 'label': 'Strided Copy (R+W)'},
-            'strided_read': {'color': '#9C27B0', 'marker': 'v', 'label': 'Strided Read'},
+        # pattern -> 颜色 + 可读 label
+        pattern_style_map = {
+            'seq_copy':     {'color': '#2196F3', 'label': 'Sequential Copy (R+W)'},
+            'seq_read':     {'color': '#4CAF50', 'label': 'Sequential Read'},
+            'seq_write':    {'color': '#FF9800', 'label': 'Sequential Write'},
+            'strided_copy': {'color': '#F44336', 'label': 'Strided Copy (R+W)'},
+            'strided_read': {'color': '#9C27B0', 'label': 'Strided Read'},
         }
-        # 默认样式（用于未知 pattern）
         default_colors = ['#00BCD4', '#795548', '#607D8B', '#E91E63', '#3F51B5']
 
-        fig, ax = plt.subplots(figsize=(12, 7))
+        # dtype -> 线型 + marker（用以区分精度）
+        dtype_style_map = {
+            'float32':  {'linestyle': '-',  'marker': 'o'},
+            'float16':  {'linestyle': '--', 'marker': 's'},
+            'bfloat16': {'linestyle': '-.', 'marker': '^'},
+        }
+        fallback_linestyles = [':', (0, (3, 1, 1, 1)), (0, (5, 1))]
+        fallback_markers = ['D', 'v', 'P', 'X', '*']
 
+        fig, ax = plt.subplots(figsize=(13, 7.5))
         peak_bw = 0.0
+
         for i, pattern in enumerate(patterns):
-            pat_results = sorted(
-                [r for r in results if r.pattern == pattern],
-                key=lambda r: r.size_mb,
-            )
-            if not pat_results:
-                continue
-
-            sizes = [r.size_mb for r in pat_results]
-            bws = [r.bandwidth_gbps for r in pat_results]
-            peak_bw = max(peak_bw, pat_results[0].peak_bandwidth_gbps)
-
-            style = style_map.get(pattern, {
+            pat_style = pattern_style_map.get(pattern, {
                 'color': default_colors[i % len(default_colors)],
-                'marker': 'o',
                 'label': pattern,
             })
+            color = pat_style['color']
+            pat_label = pat_style['label']
 
-            ax.plot(
-                sizes, bws,
-                color=style['color'],
-                marker=style['marker'],
-                markersize=6,
-                linewidth=2,
-                label=style['label'],
-                alpha=0.9,
-            )
+            for j, dtype in enumerate(dtypes):
+                pat_results = sorted(
+                    [r for r in results if r.pattern == pattern and r.dtype == dtype],
+                    key=lambda r: r.size_mb,
+                )
+                if not pat_results:
+                    continue
 
-        # 标注理论峰值带宽
+                sizes = [r.size_mb for r in pat_results]
+                bws = [r.bandwidth_gbps for r in pat_results]
+                peak_bw = max(peak_bw, pat_results[0].peak_bandwidth_gbps)
+
+                dt_style = dtype_style_map.get(dtype, {
+                    'linestyle': fallback_linestyles[j % len(fallback_linestyles)],
+                    'marker': fallback_markers[j % len(fallback_markers)],
+                })
+
+                ax.plot(
+                    sizes, bws,
+                    color=color,
+                    linestyle=dt_style['linestyle'],
+                    marker=dt_style['marker'],
+                    markersize=6,
+                    linewidth=2,
+                    label=f'{pat_label} [{dtype}]',
+                    alpha=0.9,
+                )
+
+        # 理论峰值带宽
         if peak_bw > 0:
             ax.axhline(
                 y=peak_bw, color='gray', linewidth=1.5,
@@ -573,29 +616,25 @@ class MemBwBenchmark:
                 label=f'Peak BW ({peak_bw:.0f} GB/s)',
             )
 
-        # 标注 L2 cache 边界
-        l2_mb = self.l2_cache_mb
+        # L2 cache 边界
         ax.axvline(
-            x=l2_mb, color='red', linewidth=1.5,
+            x=self.l2_cache_mb, color='red', linewidth=1.5,
             linestyle=':', alpha=0.7,
-            label=f'L2 Cache ({l2_mb:.0f} MB)',
+            label=f'L2 Cache ({self.l2_cache_mb:.0f} MB)',
         )
-
-        # 在 L2 边界两侧添加区域标注
-        xlim = ax.get_xlim()
-        ax.axvspan(xlim[0], l2_mb, alpha=0.05, color='green')
-        ax.axvspan(l2_mb, xlim[1], alpha=0.05, color='orange')
-        ax.set_xlim(xlim)
 
         ax.set_xscale('log', base=2)
         ax.set_xlabel('Data Size (MB)', fontsize=12)
         ax.set_ylabel('Bandwidth (GB/s)', fontsize=12)
         ax.set_title(
-            f'Memory Bandwidth vs Data Size | {self.device_name}\n'
-            f'L2 Cache: {l2_mb:.0f} MB | Triton Autotune',
+            f'HBM Bandwidth vs Data Size | {self.device_name}\n'
+            f'L2 Cache: {self.l2_cache_mb:.0f} MB | Triton Autotune',
             fontsize=13, fontweight='bold',
         )
-        ax.legend(loc='best', fontsize=10, framealpha=0.9)
+        ax.legend(
+            loc='center left', bbox_to_anchor=(1.01, 0.5),
+            fontsize=9, framealpha=0.9,
+        )
         ax.grid(True, alpha=0.3, which='both')
         ax.tick_params(labelsize=10)
 
@@ -611,13 +650,7 @@ class MemBwBenchmark:
         plt.tight_layout()
         plt.savefig(output_path, dpi=150, bbox_inches='tight')
         plt.close()
-        print(f"[INFO] Curve plot saved to: {output_path}")
-
-    # 保留旧方法名作为别名，兼容已有调用
-    def plot_heatmap(self, results, output_path='membw_curve.png', pattern_filter=None):
-        """Deprecated: 请使用 plot() 方法。此方法保留用于向后兼容。"""
-        filter_list = [pattern_filter] if isinstance(pattern_filter, str) else pattern_filter
-        return self.plot(results, output_path, pattern_filter=filter_list)
+        print(f"[INFO] Size-BW curve (all dtypes) saved to: {output_path}")
 
     def save_csv(self, results: List[MemBwResult], path: str):
         """Save benchmark results to CSV file."""

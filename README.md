@@ -47,7 +47,7 @@ python -m xpu_benchmark --config config/deepseek.json
             [4096, 4096, 4096]
         ]
     },
-    "membw": {
+    "memory": {
         "num_iters": 50,
         "dry_run_iters": 10,
         "dtypes": ["float32"],
@@ -85,7 +85,7 @@ xpu_benchmark/
 ├── run.sh              # 运行脚本
 ├── __main__.py         # 主入口
 ├── bench_gemm.py       # GEMM 基准测试
-├── bench_membw.py      # 内存带宽基准测试
+├── bench_memory.py     # 内存带宽基准测试
 ├── timing.py           # 计时工具
 ├── hw_spec.py          # 硬件规格
 ├── config/             # 配置文件目录
