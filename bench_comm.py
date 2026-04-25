@@ -394,9 +394,18 @@ class CommBenchmark:
 
         bpe = _bytes_per_element(dtype)
         n_elements = data_size_bytes // bpe
-        # 确保元素数能被 target_world_size 整除（All2All 需要）
-        n_elements = (n_elements // target_world_size) * target_world_size
-        n_elements = max(target_world_size, n_elements)
+        
+        # 根据操作类型调整元素数
+        if operation == 'all2all':
+            # All2All 需要确保元素数能被 target_world_size 整除
+            n_elements = (n_elements // target_world_size) * target_world_size
+        elif operation == 'allgather':
+            # AllGather 不需要整除，但需要确保至少有一个元素
+            n_elements = max(1, n_elements)
+        else:
+            # AllReduce 和 All2Allv 不需要整除要求
+            n_elements = max(1, n_elements)
+        
         actual_size_bytes = n_elements * bpe
 
         try:
@@ -612,9 +621,9 @@ class CommBenchmark:
         output_path: str = 'comm_bw_curve.png',
     ):
         """
-        在一张图上绘制所有通信操作的 数据量-带宽 曲线。
+        在一张图上绘制所有通信操作的 数据量-算法带宽 曲线。
 
-        X 轴为数据量 (log scale)，Y 轴为 Bus Bandwidth (GB/s)。
+        X 轴为数据量 (log scale)，Y 轴为 Algorithm Bandwidth (GB/s)。
         不同操作用不同颜色和标记区分。
 
         Args:
@@ -664,29 +673,20 @@ class CommBenchmark:
                     continue
 
                 sizes = [r.data_size_bytes for r in op_results]
-                bws = [r.bus_bandwidth_gbps for r in op_results]
+                bws = [r.algo_bandwidth_gbps for r in op_results]
 
                 color = base_colors.get(op, '#757575')
                 marker = markers[ws_idx % len(markers)]
                 linestyle = linestyles[ws_idx % len(linestyles)]
 
-                # 生成标签：如果只有一个 world_size，使用简洁标签
-                if len(world_sizes_tested) == 1:
-                    label_map = {
-                        'allreduce': f'TP{ws}_AllReduce',
-                        'allgather': 'AllGather',
-                        'all2all': 'All2All',
-                        'all2allv': 'All2Allv',
-                    }
-                    label = label_map.get(op, op)
-                else:
-                    label_map = {
-                        'allreduce': f'TP{ws}_AllReduce',
-                        'allgather': f'AllGather(ws={ws})',
-                        'all2all': f'All2All(ws={ws})',
-                        'all2allv': f'All2Allv(ws={ws})',
-                    }
-                    label = label_map.get(op, f'{op}(ws={ws})')
+                # 生成标签
+                label_map = {
+                    'allreduce': f'AllReduce_TP{ws}',
+                    'allgather': f'AllGather_TP{ws}',
+                    'all2all': f'All2All_TP{ws}',
+                    'all2allv': f'All2Allv_TP{ws}',
+                }
+                label = label_map.get(op, f'{op}(ws={ws})')
 
                 ax.plot(
                     sizes, bws,
@@ -703,12 +703,12 @@ class CommBenchmark:
         # X 轴设置
         ax.set_xscale('log', base=2)
         ax.set_xlabel('Data Size per GPU', fontsize=13)
-        ax.set_ylabel('Bus Bandwidth (GB/s)', fontsize=13)
+        ax.set_ylabel('Algorithm Bandwidth (GB/s)', fontsize=13)
 
         ws_str = ','.join(str(ws) for ws in world_sizes_tested)
         ax.set_title(
-            f'Multi-GPU Communication Bandwidth\n'
-            f'{self.device_name} | World Sizes: [{ws_str}] | NCCL Backend',
+            f'NCCL Algorithm Bandwidth\n'
+            f'{self.device_name} | World Sizes: [{ws_str}]',
             fontsize=14, fontweight='bold',
         )
 

@@ -2,7 +2,7 @@
     "gemm": {
         "num_iters": 20,
         "dry_run_iters": 5,
-        "dtypes": ["float32", "bfloat16", "float16", "int8"],
+        "dtypes": ["float32", "bfloat16", "float16", "int8", "float8_e4m3fn"],
         "sizes": [
             [1, 4096, 4096],
             [4, 4096, 4096],
@@ -20,7 +20,7 @@
         "num_iters": 20,
         "dry_run_iters": 5,
         "dtypes": ["float32", "bfloat16"],
-        "patterns": ["seq_copy", "strided_copy"]
+        "patterns": ["seq_copy", "seq_write", "strided_copy"]
     },
     "comm": {
         "num_iters": 20,

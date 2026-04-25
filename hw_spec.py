@@ -16,7 +16,7 @@ DEVICE_SPECS = {
         "float16": 250,
         "bfloat16": 250,
         "int8": 500,
-        "float8_e4m3fn": 1000,
+        "float8_e4m3fn": 500,
     },
     "NVIDIA RTX PRO 6000D": {
         "name": "RTX 6000D",
@@ -91,12 +91,8 @@ DTYPE_FROM_STR = {
     "float16": torch.float16,
     "bfloat16": torch.bfloat16,
     "int8": torch.int8,
+    "float8_e4m3fn": torch.float8_e4m3fn,
 }
-
-try:
-    DTYPE_FROM_STR["float8_e4m3fn"] = torch.float8_e4m3fn
-except AttributeError:
-    pass
 
 # Bytes per element for each dtype
 DTYPE_BYTES = {
@@ -104,12 +100,8 @@ DTYPE_BYTES = {
     torch.float16: 2,
     torch.bfloat16: 2,
     torch.int8: 1,
+    torch.float8_e4m3fn: 1,
 }
-try:
-    DTYPE_BYTES[torch.float8_e4m3fn] = 1
-except AttributeError:
-    pass
-
 
 def get_device_spec(device_name: str) -> dict:
     """

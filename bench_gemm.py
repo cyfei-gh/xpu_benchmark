@@ -89,11 +89,11 @@ def _create_gemm_tensors(
         a = torch.randint(-128, 127, (m, k), device=device, dtype=torch.int8)
         b = torch.randint(-128, 127, (k, n), device=device, dtype=torch.int8)
     elif dtype == torch.float8_e4m3fn:
-        # Create FP8 tensors via cast from float16
-        a_f16 = torch.randn(m, k, device=device, dtype=torch.float16)
-        b_f16 = torch.randn(k, n, device=device, dtype=torch.float16)
-        a = a_f16.to(torch.float8_e4m3fn)
-        b = b_f16.to(torch.float8_e4m3fn)
+        # NOTE: torch.randint / torch.randn 等随机算子不支持直接生成 float8_e4m3fn,
+        # cuBLASLt 对 FP8 GEMM 的硬约束: A 必须 row-major, B 必须 column-major.
+        # 做法: 先按 (N, K) 行主序分配, 再 .t() 得到 shape=(K, N) 的列主序视图 (stride 不连续, 不要 .contiguous()).
+        a = torch.randn((m, k), device=device, dtype=torch.float32).to(torch.float8_e4m3fn)
+        b = torch.randn((n, k), device=device, dtype=torch.float32).to(torch.float8_e4m3fn).t()
     else:
         raise ValueError(f"Unsupported dtype: {dtype}")
 
@@ -106,6 +106,7 @@ def _run_gemm(
     dtype: torch.dtype,
 ) -> torch.Tensor:
     """Execute GEMM for the given dtype."""
+    # TODO: support FP4 gemm, cutlass, triton, TileLang,
     if dtype in (torch.float32, torch.float16, torch.bfloat16):
         return torch.matmul(a, b)
     elif dtype == torch.int8:
@@ -115,13 +116,14 @@ def _run_gemm(
         # Use torch._scaled_mm for FP8
         scale_a = torch.tensor(1.0, device=a.device, dtype=torch.float32)
         scale_b = torch.tensor(1.0, device=b.device, dtype=torch.float32)
-        result, _ = torch._scaled_mm(
+        result_tuple = torch._scaled_mm(
             a, b,
             scale_a=scale_a,
             scale_b=scale_b,
             out_dtype=torch.bfloat16,
+            use_fast_accum=False
         )
-        return result
+        return result_tuple[0]  # Return the first element (result tensor)
     else:
         raise ValueError(f"Unsupported dtype for GEMM: {dtype}")
 
@@ -863,7 +865,7 @@ class LLMGemmBenchmark:
                 f'LLM GEMM Benchmark: {model_name} | {dtype_str} | {self.device_name}',
                 fontsize=13, fontweight='bold',
             )
-            ax.legend(fontsize=10, loc='lower right')
+            ax.legend(fontsize=10, loc='center left')
             ax.grid(True, alpha=0.3)
             ax.tick_params(labelsize=9)
 

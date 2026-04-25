@@ -44,7 +44,7 @@ def _get_autotune_configs():
     - 每个 thread 至少处理 2 个元素（BLOCK_SIZE >= num_warps * 32 * 2），
       否则向量化 load 的收益会被吃掉；这也自动过滤了一些明显劣配。
     """
-    block_sizes = [128, 1024, 8192] #[256, 1024, 4096, 16384, 65536]
+    block_sizes = [1024] #[128, 1024, 8192, 16384]
     warp_options = [4] #[4, 8]
     stage_options = [3] #[2, 3]
 
@@ -504,7 +504,7 @@ class MemBwBenchmark:
                       f"(size={best_hbm.size_mb:.2f}MB)")
             if pat_results:
                 best = max(pat_results, key=lambda r: r.bandwidth_gbps)
-                print(f"  Peak BW (device)      : {best.peak_bandwidth_gbps:.1f} GB/s")
+                print(f"  Peak BW (theory)      : {best.peak_bandwidth_gbps:.1f} GB/s")
                 if best.utilization > 0:
                     print(f"  Best utilization      : {best.utilization*100:.1f}%")
 
@@ -627,13 +627,12 @@ class MemBwBenchmark:
         ax.set_xlabel('Data Size (MB)', fontsize=12)
         ax.set_ylabel('Bandwidth (GB/s)', fontsize=12)
         ax.set_title(
-            f'HBM Bandwidth vs Data Size | {self.device_name}\n'
+            f'HBM Bandwidth | {self.device_name}\n'
             f'L2 Cache: {self.l2_cache_mb:.0f} MB | Triton Autotune',
             fontsize=13, fontweight='bold',
         )
         ax.legend(
-            loc='center left', bbox_to_anchor=(1.01, 0.5),
-            fontsize=9, framealpha=0.9,
+            loc='upper left', fontsize=9, framealpha=0.9,
         )
         ax.grid(True, alpha=0.3, which='both')
         ax.tick_params(labelsize=10)
