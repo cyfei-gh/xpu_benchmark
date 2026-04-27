@@ -51,8 +51,8 @@ def _bench_with_cuda_events(
 
     if cold_l2_cache:
         # Rotate buffers to flush L2 cache between iterations
-        # Allocate a large buffer to flush L2 (~40MB for L20)
-        flush_size = 40 * 1024 * 1024 // 4  # 40MB in float32 elements
+        # Allocate a large buffer to flush L2 (~96MB for L20)
+        flush_size = 96 * 1024 * 1024 // 4  # 96MB in float32 elements
         flush_buf = torch.empty(flush_size, dtype=torch.float32, device='cuda')
 
     for _ in range(num_iters):

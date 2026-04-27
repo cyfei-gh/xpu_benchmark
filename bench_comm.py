@@ -393,23 +393,13 @@ class CommBenchmark:
             return None
 
         bpe = _bytes_per_element(dtype)
-        n_elements = data_size_bytes // bpe
-        
-        # 根据操作类型调整元素数
-        if operation == 'all2all':
-            # All2All 需要确保元素数能被 target_world_size 整除
-            n_elements = (n_elements // target_world_size) * target_world_size
-        elif operation == 'allgather':
-            # AllGather 不需要整除，但需要确保至少有一个元素
-            n_elements = max(1, n_elements)
-        else:
-            # AllReduce 和 All2Allv 不需要整除要求
-            n_elements = max(1, n_elements)
-        
+        n_elements = (max(data_size_bytes // bpe // target_world_size, 1)) * target_world_size
         actual_size_bytes = n_elements * bpe
 
         try:
             # 分配通信 buffer
+            if operation == 'allgather':
+                n_elements = n_elements // target_world_size # NOTE: allgather 实际操作了 tensor_list[world_size]
             tensor = torch.randn(n_elements, dtype=dtype, device=self.device)
 
             # 构建通信函数
@@ -707,7 +697,7 @@ class CommBenchmark:
 
         ws_str = ','.join(str(ws) for ws in world_sizes_tested)
         ax.set_title(
-            f'NCCL Algorithm Bandwidth\n'
+            f'NCCL Bandwidth\n'
             f'{self.device_name} | World Sizes: [{ws_str}]',
             fontsize=14, fontweight='bold',
         )
@@ -792,7 +782,7 @@ def main():
     )
     parser.add_argument(
         '--operations', type=str, nargs='+',
-        default=['allreduce', 'allgather', 'all2all', 'all2allv'],
+        default=['allreduce', 'allgather', 'all2all'],
         help="要测试的通信操作",
     )
     parser.add_argument(

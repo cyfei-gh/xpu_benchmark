@@ -44,7 +44,7 @@ def _get_autotune_configs():
     - 每个 thread 至少处理 2 个元素（BLOCK_SIZE >= num_warps * 32 * 2），
       否则向量化 load 的收益会被吃掉；这也自动过滤了一些明显劣配。
     """
-    block_sizes = [1024] #[128, 1024, 8192, 16384]
+    block_sizes = [128, 1024, 8192]
     warp_options = [4] #[4, 8]
     stage_options = [3] #[2, 3]
 
@@ -86,16 +86,6 @@ class MemBwResult:
     utilization: float    # bandwidth / peak (0~1)
     in_l2_cache: bool     # Whether data fits in L2 cache
     device_name: str
-
-    def __str__(self) -> str:
-        util_str = f"{self.utilization*100:.1f}%" if self.utilization > 0 else "N/A"
-        l2_str = "L2" if self.in_l2_cache else "HBM"
-        return (
-            f"pattern={self.pattern:<14} size={self.size_mb:8.2f}MB | "
-            f"dtype={self.dtype:<8} | "
-            f"time={self.median_time_ms:.3f}±{self.std_time_ms:.3f}ms | "
-            f"BW={self.bandwidth_gbps:.1f}GB/s (util={util_str}) [{l2_str}]"
-        )
 
 
 # ===================================================================
@@ -373,7 +363,7 @@ class MemBwBenchmark:
                 return None
 
             # Determine if data fits in L2 cache
-            in_l2 = (n_elements * bpe) <= self.l2_cache_bytes
+            in_l2 = False # (n_elements * bpe) <= self.l2_cache_bytes
 
             # Flush L2 cache for HBM-bound tests to get realistic bandwidth
             median_ms, std_ms = bench_gpu_time(
@@ -446,7 +436,7 @@ class MemBwBenchmark:
         print(f"Patterns: {patterns}")
         print(f"{'='*100}")
         print(f"{'pattern':<14} {'size(MB)':>8} | {'dtype':<8} | "
-              f"{'time(ms)':>12} | {'BW(GB/s)':>10} | {'util':>7} | {'L2?':>4}")
+              f"{'time(ms)':>12} | {'BW(GB/s)':>10} | {'util':>7} | {'Flush L2?':>4}")
         print(f"{'-'*100}")
 
         for pattern in patterns:
@@ -457,7 +447,7 @@ class MemBwBenchmark:
                         results.append(result)
                         util_str = (f"{result.utilization*100:.1f}%"
                                     if result.utilization > 0 else "N/A")
-                        l2_str = "Y" if result.in_l2_cache else "N"
+                        l2_str = "N" if result.in_l2_cache else "Y"
                         print(
                             f"{result.pattern:<14} "
                             f"{result.size_mb:>8.2f} | "
@@ -512,7 +502,6 @@ class MemBwBenchmark:
         self,
         results: List[MemBwResult],
         output_path: str = 'membw_curve.png',
-        pattern_filter: List[str] = None,
     ):
         """
         在一张图上绘制不同 pattern × 不同 dtype 的 size-BW 曲线。
@@ -526,7 +515,6 @@ class MemBwBenchmark:
         Args:
             results: List of MemBwResult from run().
             output_path: Path to save the figure.
-            pattern_filter: If set, only plot these patterns.
         """
         try:
             import matplotlib
@@ -541,10 +529,8 @@ class MemBwBenchmark:
             print("[WARNING] No results to plot.")
             return
 
-        dtypes = sorted(set(r.dtype for r in results))
+        dtypes = sorted(set(r.dtype for r in results), reverse=True)
         patterns = sorted(set(r.pattern for r in results))
-        if pattern_filter:
-            patterns = [p for p in patterns if p in pattern_filter]
 
         if not patterns or not dtypes:
             print("[WARNING] No matching patterns or dtypes found for plotting.")
@@ -607,6 +593,21 @@ class MemBwBenchmark:
                     label=f'{pat_label} [{dtype}]',
                     alpha=0.9,
                 )
+
+                # 仅在主要曲线 'float32' 标注带宽数值（GB/s），避免多 dtype 时文字重叠
+                if dtype == 'float32':
+                    for x, y in zip(sizes, bws):
+                        ax.annotate(
+                            f'{y:.0f}',
+                            xy=(x, y),
+                            xytext=(0, 6),
+                            textcoords='offset points',
+                            fontsize=7,
+                            color=color,
+                            ha='center',
+                            va='bottom',
+                            alpha=0.85,
+                        )
 
         # 理论峰值带宽
         if peak_bw > 0:

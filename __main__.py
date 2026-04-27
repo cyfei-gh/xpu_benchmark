@@ -52,13 +52,37 @@ from datetime import datetime
 # Allow running as script or module
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from xpu_benchmark import GemmBenchmark, MemBwBenchmark, LLMGemmBenchmark, LLM_MODELS, CommBenchmark
+from xpu_benchmark import GemmBenchmark, MemBwBenchmark, LLMGemmBenchmark, CommBenchmark
 
 
 def load_config(config_path: str) -> dict:
     """Load benchmark configuration from JSON file."""
     with open(config_path, 'r') as f:
         return json.load(f)
+
+
+def get_device_prefix() -> str:
+    """Get a short device name prefix for output file naming.
+
+    Examples:
+        "NVIDIA L20"           -> "L20"
+        "NVIDIA H100 80GB HBM3" -> "H100"
+        "NVIDIA A100-SXM4-80GB" -> "A100"
+    """
+    if not torch.cuda.is_available():
+        return "cpu"
+    name = torch.cuda.get_device_name(0)
+    # Remove vendor prefix
+    for vendor in ("NVIDIA ", "AMD ", "Intel "):
+        if name.startswith(vendor):
+            name = name[len(vendor):]
+            break
+    # Take the first token, strip common suffixes
+    token = name.split()[0] if name else "gpu"
+    token = token.split('-')[0]
+    # Sanitize for filesystem
+    token = ''.join(c if c.isalnum() else '_' for c in token)
+    return token or "gpu"
 
 
 def run_gemm(config: dict, output_dir: str = None, use_cuda_events: bool = False):
@@ -85,7 +109,8 @@ def run_gemm(config: dict, output_dir: str = None, use_cuda_events: bool = False
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        csv_path = os.path.join(output_dir, f'gemm_{timestamp}.csv')
+        device_prefix = get_device_prefix()
+        csv_path = os.path.join(output_dir, f'{device_prefix}_gemm_{timestamp}.csv')
         bench.save_csv(results, csv_path)
 
     return results
@@ -94,7 +119,7 @@ def run_gemm(config: dict, output_dir: str = None, use_cuda_events: bool = False
 def run_llm_gemm(config: dict, output_dir: str = None, use_cuda_events: bool = False):
     """Run LLM GEMM benchmark (QKV, Proj, FFN, MoE workloads) based on config."""
     cfg = config['llm_gemm']
-    model_name = cfg.get('model', 'deepseek-v3')
+    model_name = cfg.get('model', 'HY-image-3.0')
     batch_sizes = cfg.get('batch_sizes', [1])
     dtypes = cfg.get('dtypes', ['bfloat16'])
     tp = cfg.get('tp', 1)
@@ -118,9 +143,10 @@ def run_llm_gemm(config: dict, output_dir: str = None, use_cuda_events: bool = F
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        csv_path = os.path.join(output_dir, f'llm_gemm_{model_name}_{timestamp}.csv')
+        device_prefix = get_device_prefix()
+        csv_path = os.path.join(output_dir, f'{device_prefix}_gemm_{model_name}_{timestamp}.csv')
         bench.save_csv(results, csv_path)
-        plot_path = os.path.join(output_dir, f'llm_gemm_{model_name}_{timestamp}.png')
+        plot_path = os.path.join(output_dir, f'{device_prefix}_gemm_{model_name}_{timestamp}.png')
         bench.plot_batch_tflops_curve(results, plot_path)
 
     return results
@@ -151,9 +177,10 @@ def run_membw(config: dict, output_dir: str = None, use_cuda_events: bool = Fals
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        csv_path = os.path.join(output_dir, f'membw_{timestamp}.csv')
+        device_prefix = get_device_prefix()
+        csv_path = os.path.join(output_dir, f'{device_prefix}_membw_{timestamp}.csv')
         bench.save_csv(results, csv_path)
-        plot_path = os.path.join(output_dir, f'membw_{timestamp}.png')
+        plot_path = os.path.join(output_dir, f'{device_prefix}_membw_{timestamp}.png')
         bench.plot_size_bw_curve(results, plot_path)
 
     return results
@@ -164,15 +191,6 @@ def run_comm(config: dict, output_dir: str = None):
 
     注意：comm benchmark 需要通过 torchrun 启动多进程环境。
     如果当前未处于分布式环境，会尝试初始化单卡模式。
-
-    config['comm'] 支持的参数：
-        - num_iters: 测量迭代次数 (default: 50)
-        - dry_run_iters: 预热迭代次数 (default: 10)
-        - operations: 通信操作列表 (default: all four)
-        - dtype: 数据类型 (default: bfloat16)
-        - sizes_bytes: 数据量列表 (default: 4KB~512MB)
-        - world_size: 要测试的 rank 数，支持整数或列表
-                      例如: 8 或 [1, 2, 4, 8]
     """
     cfg = config['comm']
     num_iters = cfg.get('num_iters', 50)
@@ -211,9 +229,10 @@ def run_comm(config: dict, output_dir: str = None):
         if output_dir:
             os.makedirs(output_dir, exist_ok=True)
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            csv_path = os.path.join(output_dir, f'comm_bw_{timestamp}.csv')
+            device_prefix = get_device_prefix()
+            csv_path = os.path.join(output_dir, f'{device_prefix}_comm_bw_{timestamp}.csv')
             bench.save_csv(results, csv_path)
-            plot_path = os.path.join(output_dir, f'comm_bw_{timestamp}.png')
+            plot_path = os.path.join(output_dir, f'{device_prefix}_comm_bw_{timestamp}.png')
             bench.plot(results, plot_path)
 
     return results

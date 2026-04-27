@@ -9,8 +9,8 @@ Provides:
 
 from .bench_gemm import (
     GemmBenchmark, GemmResult,
-    LLMGemmBenchmark, LLMGemmResult, LLMModelConfig,
-    LLM_MODELS, get_llm_gemm_workloads,
+    LLMGemmBenchmark, LLMGemmResult,
+    MODEL_SHAPE,
 )
 from .bench_memory import MemBwBenchmark, MemBwResult
 from .bench_comm import CommBenchmark, CommBwResult
@@ -22,9 +22,7 @@ __all__ = [
     "GemmResult",
     "LLMGemmBenchmark",
     "LLMGemmResult",
-    "LLMModelConfig",
-    "LLM_MODELS",
-    "get_llm_gemm_workloads",
+    "MODEL_SHAPE",
     "MemBwBenchmark",
     "MemBwResult",
     "CommBenchmark",
