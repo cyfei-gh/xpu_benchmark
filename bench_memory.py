@@ -44,7 +44,7 @@ def _get_autotune_configs():
     - 每个 thread 至少处理 2 个元素（BLOCK_SIZE >= num_warps * 32 * 2），
       否则向量化 load 的收益会被吃掉；这也自动过滤了一些明显劣配。
     """
-    block_sizes = [128, 1024, 8192]
+    block_sizes = [1024] # [128, 1024, 8192]
     warp_options = [4] #[4, 8]
     stage_options = [3] #[2, 3]
 
@@ -67,25 +67,6 @@ def _get_autotune_configs():
 
 # 预先计算一次，避免多个 kernel 各自重复构造
 _AUTOTUNE_CONFIGS = _get_autotune_configs()
-
-
-# ===================================================================
-# Data structures
-# ===================================================================
-
-@dataclass
-class MemBwResult:
-    """Result of a single memory bandwidth benchmark run."""
-    pattern: str          # e.g. 'seq_copy', 'seq_read', 'seq_write', 'strided_copy', 'strided_read'
-    size_mb: float        # Buffer size in MB
-    dtype: str
-    median_time_ms: float
-    std_time_ms: float
-    bandwidth_gbps: float
-    peak_bandwidth_gbps: float
-    utilization: float    # bandwidth / peak (0~1)
-    in_l2_cache: bool     # Whether data fits in L2 cache
-    device_name: str
 
 
 # ===================================================================
@@ -175,6 +156,21 @@ def _strided_read_kernel(
 # ===================================================================
 # Benchmark class
 # ===================================================================
+
+@dataclass
+class MemBwResult:
+    """Result of a single memory bandwidth benchmark run."""
+    pattern: str          # e.g. 'seq_copy', 'seq_read', 'seq_write', 'strided_copy', 'strided_read'
+    size_mb: float        # Buffer size in MB
+    dtype: str
+    median_time_ms: float
+    std_time_ms: float
+    bandwidth_gbps: float
+    peak_bandwidth_gbps: float
+    utilization: float    # bandwidth / peak (0~1)
+    flush_l2_cache: bool     # Whether data fits in L2 cache
+    device_name: str
+
 
 class MemBwBenchmark:
     """
@@ -363,7 +359,7 @@ class MemBwBenchmark:
                 return None
 
             # Determine if data fits in L2 cache
-            in_l2 = False # (n_elements * bpe) <= self.l2_cache_bytes
+            flush_l2_cache = True # (n_elements * bpe) > self.l2_cache_bytes
 
             # Flush L2 cache for HBM-bound tests to get realistic bandwidth
             median_ms, std_ms = bench_gpu_time(
@@ -371,7 +367,7 @@ class MemBwBenchmark:
                 enable_cupti=self.enable_cupti,
                 num_iters=self.num_iters,
                 dry_run_iters=self.dry_run_iters,
-                cold_l2_cache=(not in_l2),
+                cold_l2_cache=(flush_l2_cache),
             )
 
         except Exception as e:
@@ -395,7 +391,7 @@ class MemBwBenchmark:
             bandwidth_gbps=bandwidth_gbps,
             peak_bandwidth_gbps=peak_bw,
             utilization=utilization,
-            in_l2_cache=in_l2,
+            flush_l2_cache=flush_l2_cache,
             device_name=self.device_name,
         )
 
@@ -447,7 +443,7 @@ class MemBwBenchmark:
                         results.append(result)
                         util_str = (f"{result.utilization*100:.1f}%"
                                     if result.utilization > 0 else "N/A")
-                        l2_str = "N" if result.in_l2_cache else "Y"
+                        l2_str = "Y" if result.flush_l2_cache else "N"
                         print(
                             f"{result.pattern:<14} "
                             f"{result.size_mb:>8.2f} | "
@@ -480,8 +476,8 @@ class MemBwBenchmark:
             pat_results = [r for r in results if r.pattern == pattern]
 
             # Split by L2 vs HBM
-            l2_results = [r for r in pat_results if r.in_l2_cache]
-            hbm_results = [r for r in pat_results if not r.in_l2_cache]
+            hbm_results = [r for r in pat_results if r.flush_l2_cache]
+            l2_results = [r for r in pat_results if not r.flush_l2_cache]
 
             print(f"\n[{pattern}]")
             if l2_results:
@@ -662,7 +658,7 @@ class MemBwBenchmark:
                     'device', 'pattern', 'size_mb', 'dtype',
                     'median_time_ms', 'std_time_ms',
                     'bandwidth_gbps', 'peak_bandwidth_gbps', 'utilization_pct',
-                    'in_l2_cache',
+                    'flush_l2_cache',
                 ])
                 for r in results:
                     writer.writerow([
@@ -670,7 +666,7 @@ class MemBwBenchmark:
                         f"{r.median_time_ms:.4f}", f"{r.std_time_ms:.4f}",
                         f"{r.bandwidth_gbps:.4f}", f"{r.peak_bandwidth_gbps:.4f}",
                         f"{r.utilization*100:.2f}",
-                        r.in_l2_cache,
+                        r.flush_l2_cache,
                     ])
             print(f"[INFO] Results saved to: {path}")
         except Exception as e:

@@ -85,37 +85,6 @@ def get_device_prefix() -> str:
     return token or "gpu"
 
 
-def run_gemm(config: dict, output_dir: str = None, use_cuda_events: bool = False):
-    """Run GEMM benchmark based on config."""
-    cfg = config['gemm']
-    sizes = [tuple(s) for s in cfg.get('sizes', [
-        (1024, 1024, 1024),
-        (2048, 2048, 2048),
-        (4096, 4096, 4096),
-    ])]
-    dtypes = cfg.get('dtypes', ['float32', 'bfloat16', 'float16'])
-    num_iters = cfg.get('num_iters', 30)
-    dry_run_iters = cfg.get('dry_run_iters', 5)
-
-    bench = GemmBenchmark(
-        num_iters=num_iters,
-        dry_run_iters=dry_run_iters,
-        enable_cupti=not use_cuda_events,
-    )
-
-    results = bench.run(sizes=sizes, dtypes=dtypes)
-    bench.print_summary(results)
-
-    if output_dir:
-        os.makedirs(output_dir, exist_ok=True)
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        device_prefix = get_device_prefix()
-        csv_path = os.path.join(output_dir, f'{device_prefix}_gemm_{timestamp}.csv')
-        bench.save_csv(results, csv_path)
-
-    return results
-
-
 def run_llm_gemm(config: dict, output_dir: str = None, use_cuda_events: bool = False):
     """Run LLM GEMM benchmark (QKV, Proj, FFN, MoE workloads) based on config."""
     cfg = config['llm_gemm']
@@ -310,9 +279,6 @@ def main():
     print(f"[INFO] Benchmark sections to run: {found_sections}")
 
     # Run benchmarks based on config sections
-    if 'gemm' in config:
-        run_gemm(config, output_dir=args.output, use_cuda_events=args.use_cuda_events)
-
     if 'llm_gemm' in config:
         run_llm_gemm(config, output_dir=args.output, use_cuda_events=args.use_cuda_events)
 

@@ -7,7 +7,7 @@ Measures:
 - MFU (Model Flops Utilization) relative to theoretical peak
 - Memory bandwidth (GB/s)
 
-Supports dtypes: float32, float16, bfloat16, int8, float8_e4m3fn
+Supports dtypes: float32, float16, bfloat16, int8, float8_e4m3fn, float4_e2m1fn_x2
 """
 
 import torch
@@ -82,6 +82,7 @@ def _create_gemm_tensors(
         a = torch.randn((m, k), device=device, dtype=torch.float32).to(torch.float8_e4m3fn)
         b = torch.randn((n, k), device=device, dtype=torch.float32).to(torch.float8_e4m3fn).t()
     else:
+        # TODO: support torch.float4_e2m1fn_x2
         raise ValueError(f"Unsupported dtype: {dtype}")
 
     return a, b
@@ -156,8 +157,7 @@ class GemmBenchmark:
 
         Args:
             m, n, k: Matrix dimensions. C(m,n) = A(m,k) @ B(k,n)
-            dtype_str: Data type string, e.g. 'bfloat16', 'float16', 'float32',
-                       'int8', 'float8_e4m3fn'
+            dtype_str: Data type string, e.g. 'bfloat16', 'float16', 'float32', 'int8', 'float8_e4m3fn'
 
         Returns:
             GemmResult or None on failure.
@@ -270,49 +270,6 @@ class GemmBenchmark:
         print(f"{'='*100}")
         return results
 
-    def print_summary(self, results: List[GemmResult]):
-        """Print a summary of benchmark results."""
-        if not results:
-            print("No results to summarize.")
-            return
-
-        print(f"\n{'='*60}")
-        print("GEMM Benchmark Summary")
-        print(f"{'='*60}")
-
-        # Group by dtype
-        dtypes = sorted(set(r.dtype for r in results))
-        for dtype in dtypes:
-            dtype_results = [r for r in results if r.dtype == dtype]
-            best = max(dtype_results, key=lambda r: r.tflops)
-            print(f"\n[{dtype}]")
-            print(f"  Best TFLOPS : {best.tflops:.2f} (M={best.m}, N={best.n}, K={best.k})")
-            print(f"  Peak TFLOPS : {best.hw_tflops:.2f}")
-
-    def save_csv(self, results: List[GemmResult], path: str):
-        """Save benchmark results to CSV file."""
-        try:
-            import csv
-            with open(path, 'w', newline='') as f:
-                writer = csv.writer(f)
-                writer.writerow([
-                    'device', 'dtype', 'M', 'N', 'K',
-                    'median_time_ms', 'std_time_ms', 'tflops',
-                    'theory_time_ms', 'theory_tflops', 'mfu_pct',
-                    'bandwidth_gbps', 'hw_bandwidth', 'mbu_pct',
-                ])
-                for r in results:
-                    writer.writerow([
-                        r.device_name, r.dtype, r.m, r.n, r.k,
-                        f"{r.median_time_ms:.4f}", f"{r.std_time_ms:.4f}", f"{r.tflops:.4f}",
-                        f"{r.theory_time_ms:.4f}", f"{r.theory_tflops:.4f}", f"{r.mfu*100:.2f}",
-                        f"{r.bandwidth_gbps:.4f}", f"{r.hw_bandwidth:.4f}",
-                        f"{r.mbu*100:.2f}",
-                    ])
-            print(f"[INFO] Results saved to: {path}")
-        except Exception as e:
-            print(f"[ERROR] Failed to save CSV: {e}")
-
 
 # ===================================================================
 # LLM Model Shape
@@ -327,7 +284,8 @@ class GemmBenchmark:
 #                0 -> 行并行, 沿 K 切分 (e.g. Proj / Moe_down)
 MODEL_SHAPE: Dict[str, List] = {
     "Basic": [
-        ('QKV', [4096, 4096], 1),
+        ('Mx1024x1024', [1024, 1024], 1),
+        ('Mx4096x4096', [4096, 4096], 1),
     ],
     "HY-image-3.0": [
         ('QKV', [4096, 6144], 1),
@@ -531,7 +489,7 @@ class LLMGemmBenchmark:
 
         model_name = results[0].model_name
         print(f"\n{'='*80}")
-        print(f"LLM GEMM Summary | Model: {model_name}")
+        print(f"GEMM Benchmark Summary | Model: {model_name}")
         print(f"{'='*80}")
 
         # Group by workload name
@@ -541,9 +499,8 @@ class LLMGemmBenchmark:
             best = max(wl_results, key=lambda r: r.tflops)
             worst = min(wl_results, key=lambda r: r.tflops)
             print(f"  {wl_name:<14}: "
-                    f"best={best.tflops:.2f} TFLOPS (batch={best.batch_size}) | "
-                    f"worst={worst.tflops:.2f} TFLOPS (batch={worst.batch_size}) | "
-                    f"best MFU={best.mfu*100:.1f}%")
+                    f"best={best.tflops:.2f} TFLOPS (batch={best.batch_size}) MFU={best.mfu*100:.1f}% | "
+                    f"worst={worst.tflops:.2f} TFLOPS (batch={worst.batch_size}) MBU={worst.mbu*100:.1f}%")
 
     def save_csv(self, results: List[LLMGemmResult], path: str):
         """Save LLM GEMM benchmark results to CSV file."""
@@ -555,8 +512,8 @@ class LLMGemmBenchmark:
                     'device', 'model', 'workload',
                     'batch_size', 'tp', 'dtype',
                     'M', 'N', 'K',
-                    'median_time_ms', 'std_time_ms',
-                    'tflops', 'theory_tflops', 'mfu_pct',
+                    'median_time_ms', 'std_time_ms', 'tflops',
+                    'theory_tflops', 'mfu_pct',
                     'bandwidth_gbps', 'mbu_pct',
                 ])
                 for r in results:
