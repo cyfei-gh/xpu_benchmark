@@ -42,6 +42,8 @@ from dataclasses import dataclass, field
 import torch
 import torch.distributed as dist
 
+from . import xpu_device as xpu
+
 
 # ===================================================================
 # 数据结构
@@ -243,9 +245,9 @@ def _run_all2allv(tensor: torch.Tensor, world_size: int, rank: int, group=None):
 
 class CommBenchmark:
     """
-    GPU 多卡通信带宽 Benchmark。
+    GPU/NPU 多卡通信带宽 Benchmark。
 
-    使用 torch.distributed (NCCL backend) 测试多卡间集合通信操作的有效带宽。
+    使用 torch.distributed (NCCL / HCCL backend) 测试多卡间集合通信操作的有效带宽。
     支持 AllReduce、AllGather、All2All、All2Allv 四种通信原语。
 
     Example usage:
@@ -282,23 +284,24 @@ class CommBenchmark:
                 os.environ.setdefault('MASTER_PORT', '29500')
                 print("[WARNING] 未检测到 torchrun 环境，以单卡模式初始化。"
                       "多卡通信测试请使用: torchrun --nproc_per_node=N -m xpu_benchmark.bench_comm")
-            dist.init_process_group(backend='nccl')
+            # 根据后端自动选择 nccl / hccl
+            dist.init_process_group(backend=xpu.dist_backend())
 
         self.rank = dist.get_rank()
         self.world_size = dist.get_world_size()
         self.local_rank = int(os.environ.get('LOCAL_RANK', self.rank))
 
-        # 设置当前 GPU
-        torch.cuda.set_device(self.local_rank)
-        self.device = torch.device(f'cuda:{self.local_rank}')
-        self.device_name = torch.cuda.get_device_name(self.local_rank)
+        # 设置当前设备 (CUDA / NPU)
+        xpu.set_device(self.local_rank)
+        self.device = torch.device(xpu.device_str(self.local_rank))
+        self.device_name = xpu.get_device_name(self.local_rank)
 
     def _create_sub_group(self, target_world_size: int):
         """
         创建指定大小的 process sub-group。
 
         选取 rank 0 ~ target_world_size-1 组成子组。
-        所有 rank 都必须调用此函数（NCCL 要求），但只有子组内的 rank 会参与通信。
+        所有 rank 都必须调用此函数（NCCL/HCCL 要求），但只有子组内的 rank 会参与通信。
 
         Args:
             target_world_size: 子组大小。
@@ -319,7 +322,7 @@ class CommBenchmark:
         dry_run_iters: int = None,
     ) -> Tuple[float, float]:
         """
-        使用 CUDA Events 测量通信操作耗时。
+        使用 device Events 测量通信操作耗时.
 
         所有 rank 同步后开始计时，确保测量的是完整的集合通信时间。
 
@@ -338,23 +341,23 @@ class CommBenchmark:
         # Warmup
         for _ in range(dry_run_iters):
             fn()
-        torch.cuda.synchronize()
+        xpu.synchronize()
         dist.barrier(group=group)
 
         times_ms = []
         for _ in range(num_iters):
             # 所有 rank 同步
             dist.barrier(group=group)
-            torch.cuda.synchronize()
+            xpu.synchronize()
 
-            start_event = torch.cuda.Event(enable_timing=True)
-            end_event = torch.cuda.Event(enable_timing=True)
+            start_event = xpu.Event(enable_timing=True)
+            end_event = xpu.Event(enable_timing=True)
 
             start_event.record()
             fn()
             end_event.record()
 
-            torch.cuda.synchronize()
+            xpu.synchronize()
             elapsed = start_event.elapsed_time(end_event)
             times_ms.append(elapsed)
 
@@ -696,8 +699,9 @@ class CommBenchmark:
         ax.set_ylabel('Algorithm Bandwidth (GB/s)', fontsize=13)
 
         ws_str = ','.join(str(ws) for ws in world_sizes_tested)
+        backend_name = xpu.dist_backend().upper()
         ax.set_title(
-            f'NCCL Bandwidth\n'
+            f'{backend_name} Bandwidth\n'
             f'{self.device_name} | World Sizes: [{ws_str}]',
             fontsize=14, fontweight='bold',
         )

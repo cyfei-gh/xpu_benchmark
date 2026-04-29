@@ -1,10 +1,11 @@
 """
-GPU Memory Bandwidth benchmark using Triton kernels.
+GPU/NPU Memory Bandwidth benchmark.
 
 Measures effective memory bandwidth with fine-grained control over:
 - Sequential (contiguous) memory access
 - Strided (non-contiguous / scattered) memory access
-- Triton autotune for optimal BLOCK_SIZE and num_warps selection
+- Triton autotune for optimal BLOCK_SIZE and num_warps selection (CUDA)
+- PyTorch 原生算子回退 (NPU 或无 Triton 环境)
 - Data sizes spanning L2 cache boundary
 
 Key metrics:
@@ -16,15 +17,23 @@ highlighting L2 cache effects.
 """
 
 import torch
-import triton
-import triton.language as tl
 import numpy as np
-import os
+from . import xpu_device as xpu
 from typing import List, Dict, Optional, Tuple
 from dataclasses import dataclass
 
 from .timing import bench_gpu_time
 from .hw_spec import get_peak_bandwidth, get_l2_cache_size
+
+# Triton 仅在 CUDA 环境可用，NPU 上当前没有 triton。动态 import。
+try:
+    import triton
+    import triton.language as tl
+    HAS_TRITON = True
+except ImportError:
+    triton = None
+    tl = None
+    HAS_TRITON = False
 
 
 # ===================================================================
@@ -44,6 +53,8 @@ def _get_autotune_configs():
     - 每个 thread 至少处理 2 个元素（BLOCK_SIZE >= num_warps * 32 * 2），
       否则向量化 load 的收益会被吃掉；这也自动过滤了一些明显劣配。
     """
+    if not HAS_TRITON:
+        return []
     block_sizes = [1024] # [128, 1024, 8192]
     warp_options = [4] #[4, 8]
     stage_options = [3] #[2, 3]
@@ -66,91 +77,147 @@ def _get_autotune_configs():
 
 
 # 预先计算一次，避免多个 kernel 各自重复构造
-_AUTOTUNE_CONFIGS = _get_autotune_configs()
+_AUTOTUNE_CONFIGS = _get_autotune_configs() if HAS_TRITON else []
 
 
 # ===================================================================
-# Triton kernels (with autotune)
+# Triton kernels (with autotune) —— 仅在 HAS_TRITON 时定义
 # ===================================================================
 
-@triton.autotune(configs=_AUTOTUNE_CONFIGS, key=["n_elements"])
-@triton.jit
-def _seq_copy_kernel(
-    src_ptr, dst_ptr,
-    n_elements,
-    BLOCK_SIZE: tl.constexpr,
-):
-    """Sequential copy: contiguous read from src + contiguous write to dst."""
-    pid = tl.program_id(0)
-    offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
-    mask = offsets < n_elements
-    data = tl.load(src_ptr + offsets, mask=mask)
-    tl.store(dst_ptr + offsets, data, mask=mask)
+_seq_copy_kernel = None
+_seq_read_kernel = None
+_seq_write_kernel = None
+_strided_copy_kernel = None
+_strided_read_kernel = None
 
 
-@triton.autotune(configs=_AUTOTUNE_CONFIGS, key=["n_elements"])
-@triton.jit
-def _seq_read_kernel(
-    src_ptr, out_ptr,
-    n_elements,
-    BLOCK_SIZE: tl.constexpr,
-):
-    """Sequential read: contiguous read, accumulate to prevent optimization."""
-    pid = tl.program_id(0)
-    offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
-    mask = offsets < n_elements
-    data = tl.load(src_ptr + offsets, mask=mask)
-    block_sum = tl.sum(data, axis=0)
-    tl.atomic_add(out_ptr, block_sum)
+def _define_triton_kernels():
+    """仅在 Triton 可用时构造 5 个 memory-bandwidth kernel 并注册到模块全局。"""
+    global _seq_copy_kernel, _seq_read_kernel, _seq_write_kernel
+    global _strided_copy_kernel, _strided_read_kernel
+
+    @triton.autotune(configs=_AUTOTUNE_CONFIGS, key=["n_elements"])
+    @triton.jit
+    def _seq_copy_kernel_impl(
+        src_ptr, dst_ptr,
+        n_elements,
+        BLOCK_SIZE: tl.constexpr,
+    ):
+        """Sequential copy: contiguous read from src + contiguous write to dst."""
+        pid = tl.program_id(0)
+        offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+        mask = offsets < n_elements
+        data = tl.load(src_ptr + offsets, mask=mask)
+        tl.store(dst_ptr + offsets, data, mask=mask)
+
+    @triton.autotune(configs=_AUTOTUNE_CONFIGS, key=["n_elements"])
+    @triton.jit
+    def _seq_read_kernel_impl(
+        src_ptr, out_ptr,
+        n_elements,
+        BLOCK_SIZE: tl.constexpr,
+    ):
+        """Sequential read: contiguous read, accumulate to prevent optimization."""
+        pid = tl.program_id(0)
+        offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+        mask = offsets < n_elements
+        data = tl.load(src_ptr + offsets, mask=mask)
+        block_sum = tl.sum(data, axis=0)
+        tl.atomic_add(out_ptr, block_sum)
+
+    @triton.autotune(configs=_AUTOTUNE_CONFIGS, key=["n_elements"])
+    @triton.jit
+    def _seq_write_kernel_impl(
+        dst_ptr,
+        n_elements,
+        BLOCK_SIZE: tl.constexpr,
+    ):
+        """Sequential write: contiguous write of constant value."""
+        pid = tl.program_id(0)
+        offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+        mask = offsets < n_elements
+        tl.store(dst_ptr + offsets, 1.0, mask=mask)
+
+    @triton.autotune(configs=_AUTOTUNE_CONFIGS, key=["n_elements"])
+    @triton.jit
+    def _strided_copy_kernel_impl(
+        src_ptr, dst_ptr,
+        indices_ptr,
+        n_elements,
+        BLOCK_SIZE: tl.constexpr,
+    ):
+        """Strided copy: gather read via indices + scatter write via indices."""
+        pid = tl.program_id(0)
+        offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+        mask = offsets < n_elements
+        idx = tl.load(indices_ptr + offsets, mask=mask)
+        data = tl.load(src_ptr + idx, mask=mask)
+        tl.store(dst_ptr + idx, data, mask=mask)
+
+    @triton.autotune(configs=_AUTOTUNE_CONFIGS, key=["n_elements"])
+    @triton.jit
+    def _strided_read_kernel_impl(
+        src_ptr, out_ptr,
+        indices_ptr,
+        n_elements,
+        BLOCK_SIZE: tl.constexpr,
+    ):
+        """Strided read: gather read via indices, reduce to scalar."""
+        pid = tl.program_id(0)
+        offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+        mask = offsets < n_elements
+        idx = tl.load(indices_ptr + offsets, mask=mask)
+        data = tl.load(src_ptr + idx, mask=mask)
+        block_sum = tl.sum(data, axis=0)
+        tl.atomic_add(out_ptr, block_sum)
+
+    _seq_copy_kernel = _seq_copy_kernel_impl
+    _seq_read_kernel = _seq_read_kernel_impl
+    _seq_write_kernel = _seq_write_kernel_impl
+    _strided_copy_kernel = _strided_copy_kernel_impl
+    _strided_read_kernel = _strided_read_kernel_impl
 
 
-@triton.autotune(configs=_AUTOTUNE_CONFIGS, key=["n_elements"])
-@triton.jit
-def _seq_write_kernel(
-    dst_ptr,
-    n_elements,
-    BLOCK_SIZE: tl.constexpr,
-):
-    """Sequential write: contiguous write of constant value."""
-    pid = tl.program_id(0)
-    offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
-    mask = offsets < n_elements
-    tl.store(dst_ptr + offsets, 1.0, mask=mask)
+if HAS_TRITON:
+    _define_triton_kernels()
 
 
-@triton.autotune(configs=_AUTOTUNE_CONFIGS, key=["n_elements"])
-@triton.jit
-def _strided_copy_kernel(
-    src_ptr, dst_ptr,
-    indices_ptr,
-    n_elements,
-    BLOCK_SIZE: tl.constexpr,
-):
-    """Strided copy: gather read via indices + scatter write via indices."""
-    pid = tl.program_id(0)
-    offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
-    mask = offsets < n_elements
-    idx = tl.load(indices_ptr + offsets, mask=mask)
-    data = tl.load(src_ptr + idx, mask=mask)
-    tl.store(dst_ptr + idx, data, mask=mask)
+# ===================================================================
+# Pure-PyTorch fallback kernels (NPU / 无 Triton 场景)
+# ===================================================================
+# 下面几个 "kernel" 直接用 PyTorch 原生算子实现，不走 triton.autotune。
+# 语义与对应 triton kernel 一致：seq_copy / seq_read / seq_write /
+# strided_copy / strided_read。
 
 
-@triton.autotune(configs=_AUTOTUNE_CONFIGS, key=["n_elements"])
-@triton.jit
-def _strided_read_kernel(
-    src_ptr, out_ptr,
-    indices_ptr,
-    n_elements,
-    BLOCK_SIZE: tl.constexpr,
-):
-    """Strided read: gather read via indices, reduce to scalar."""
-    pid = tl.program_id(0)
-    offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
-    mask = offsets < n_elements
-    idx = tl.load(indices_ptr + offsets, mask=mask)
-    data = tl.load(src_ptr + idx, mask=mask)
-    block_sum = tl.sum(data, axis=0)
-    tl.atomic_add(out_ptr, block_sum)
+def _torch_seq_copy(src: torch.Tensor, dst: torch.Tensor) -> None:
+    dst.copy_(src)
+
+
+def _torch_seq_read(src: torch.Tensor, out_scalar: torch.Tensor) -> None:
+    # 将总和写入 out_scalar[0]，保证 load 不被编译器消除
+    out_scalar.fill_(0)
+    out_scalar.add_(src.sum().to(out_scalar.dtype))
+
+
+def _torch_seq_write(dst: torch.Tensor) -> None:
+    dst.fill_(1.0)
+
+
+def _torch_strided_copy(
+    src: torch.Tensor, dst: torch.Tensor, indices: torch.Tensor,
+) -> None:
+    # gather + scatter
+    gathered = src.index_select(0, indices.long())
+    dst.index_copy_(0, indices.long(), gathered)
+
+
+def _torch_strided_read(
+    src: torch.Tensor, indices: torch.Tensor, out_scalar: torch.Tensor,
+) -> None:
+    out_scalar.fill_(0)
+    gathered = src.index_select(0, indices.long())
+    out_scalar.add_(gathered.sum().to(out_scalar.dtype))
 
 
 # ===================================================================
@@ -174,13 +241,7 @@ class MemBwResult:
 
 class MemBwBenchmark:
     """
-    GPU Memory Bandwidth benchmark using Triton kernels with autotune.
-
-    Tests sequential (contiguous) and strided (non-contiguous) memory access
-    patterns with varying data sizes. Triton autotune automatically selects
-    the best BLOCK_SIZE and num_warps for each configuration. Generates
-    curve plots showing bandwidth as a function of data size for each pattern,
-    highlighting L2 cache boundary effects.
+    GPU Memory Bandwidth benchmark using Triton kernels.
 
     Example usage:
         bench = MemBwBenchmark()
@@ -195,18 +256,23 @@ class MemBwBenchmark:
 
     def __init__(
         self,
-        device: str = 'cuda',
+        device: str = None,
         num_iters: int = 50,
         dry_run_iters: int = 10,
         enable_cupti: bool = True,
+        flush_l2_cache: bool = False,
     ):
-        if not torch.cuda.is_available():
-            raise RuntimeError("CUDA is not available.")
-        self.device = device
+        if not xpu.is_available():
+            raise RuntimeError("No XPU (CUDA / NPU) device available.")
+        self.device = device if device is not None else xpu.default_device_str()
         self.num_iters = num_iters
         self.dry_run_iters = dry_run_iters
         self.enable_cupti = enable_cupti
-        self.device_name = torch.cuda.get_device_name(0)
+        # 是否在每次迭代前 flush L2 cache：
+        #   True  -> 测 HBM 带宽（离散/连续访存均从显存拉数据）
+        #   False -> 保留 L2，小数据集会落在 L2，可观察 cache 对带宽的加速
+        self.flush_l2_cache = flush_l2_cache
+        self.device_name = xpu.get_device_name(0)
         self.l2_cache_bytes = get_l2_cache_size(self.device_name)
         self.l2_cache_mb = self.l2_cache_bytes / (1024 * 1024)
 
@@ -275,9 +341,7 @@ class MemBwBenchmark:
         dtype_str: str = 'float32',
     ) -> Optional[MemBwResult]:
         """
-        Run a single memory bandwidth benchmark with a Triton autotuned kernel.
-
-        Triton autotune 会自动选择最佳的 BLOCK_SIZE 和 num_warps 配置。
+        Run a single memory bandwidth benchmark with a Triton kernel, 自动选择最佳的 BLOCK_SIZE 和 num_warps 配置。
 
         Args:
             size_mb: Buffer size in MB (per buffer).
@@ -320,46 +384,58 @@ class MemBwBenchmark:
             if pattern in ('strided_copy', 'strided_read'):
                 indices = self._generate_strided_indices(n_elements, stride)
 
-            # Build the benchmark function with Triton kernel launch
+            # Build the benchmark function (Triton kernel or pure-torch fallback)
+            use_triton = HAS_TRITON and xpu.is_cuda()
+
             if pattern == 'seq_copy':
-                def fn():
-                    _seq_copy_kernel[grid](
-                        src, dst, n_elements,
-                    )
+                if use_triton:
+                    def fn():
+                        _seq_copy_kernel[grid](src, dst, n_elements)
+                else:
+                    def fn():
+                        _torch_seq_copy(src, dst)
                 bytes_transferred = 2 * n_elements * bpe  # read + write
             elif pattern == 'seq_read':
-                def fn():
-                    out_scalar.zero_()
-                    _seq_read_kernel[grid](
-                        src, out_scalar, n_elements,
-                    )
+                if use_triton:
+                    def fn():
+                        out_scalar.zero_()
+                        _seq_read_kernel[grid](src, out_scalar, n_elements)
+                else:
+                    def fn():
+                        _torch_seq_read(src, out_scalar)
                 bytes_transferred = n_elements * bpe  # read only
             elif pattern == 'seq_write':
-                def fn():
-                    _seq_write_kernel[grid](
-                        dst, n_elements,
-                    )
+                if use_triton:
+                    def fn():
+                        _seq_write_kernel[grid](dst, n_elements)
+                else:
+                    def fn():
+                        _torch_seq_write(dst)
                 bytes_transferred = n_elements * bpe  # write only
             elif pattern == 'strided_copy':
-                def fn():
-                    _strided_copy_kernel[grid](
-                        src, dst, indices, n_elements,
-                    )
+                if use_triton:
+                    def fn():
+                        _strided_copy_kernel[grid](src, dst, indices, n_elements)
+                else:
+                    def fn():
+                        _torch_strided_copy(src, dst, indices)
                 bytes_transferred = 2 * n_elements * bpe  # read + write
             elif pattern == 'strided_read':
-                def fn():
-                    out_scalar.zero_()
-                    _strided_read_kernel[grid](
-                        src, out_scalar, indices, n_elements,
-                    )
+                if use_triton:
+                    def fn():
+                        out_scalar.zero_()
+                        _strided_read_kernel[grid](src, out_scalar, indices, n_elements)
+                else:
+                    def fn():
+                        _torch_strided_read(src, indices, out_scalar)
                 bytes_transferred = n_elements * bpe  # read only
             else:
                 print(f"[ERROR] Unknown pattern: {pattern}. "
                       f"Supported: seq_copy, seq_read, seq_write, strided_copy, strided_read")
                 return None
 
-            # Determine if data fits in L2 cache
-            flush_l2_cache = True # (n_elements * bpe) > self.l2_cache_bytes
+            # 由 benchmark 构造参数决定是否 flush L2 cache
+            flush_l2_cache = self.flush_l2_cache
 
             # Flush L2 cache for HBM-bound tests to get realistic bandwidth
             median_ms, std_ms = bench_gpu_time(
@@ -404,9 +480,6 @@ class MemBwBenchmark:
         """
         Run memory bandwidth benchmarks sweeping data sizes.
 
-        Triton autotune 自动为每个 (pattern, size, dtype) 组合选择最佳的
-        BLOCK_SIZE 和 num_warps 配置，无需手动指定 block_counts。
-
         Args:
             sizes_mb: Buffer sizes in MB. Defaults to auto-generated range
                       spanning L2 cache boundary.
@@ -424,8 +497,9 @@ class MemBwBenchmark:
             dtypes = ['float32']
 
         results = []
+        impl_tag = "Triton Autotune" if (HAS_TRITON and xpu.is_cuda()) else "Pure-Torch"
         print(f"\n{'='*100}")
-        print(f"Memory Bandwidth Benchmark (Triton Autotune) | Device: {self.device_name}")
+        print(f"Memory Bandwidth Benchmark ({impl_tag}) | Device: {self.device_name}")
         print(f"L2 Cache: {self.l2_cache_mb:.0f} MB | "
               f"Iters: {self.num_iters} (warmup: {self.dry_run_iters})")
         print(f"Data sizes (MB): {[f'{s:.2f}' for s in sizes_mb]}")
@@ -623,9 +697,11 @@ class MemBwBenchmark:
         ax.set_xscale('log', base=2)
         ax.set_xlabel('Data Size (MB)', fontsize=12)
         ax.set_ylabel('Bandwidth (GB/s)', fontsize=12)
+        impl_tag = "Triton Autotune" if (HAS_TRITON and xpu.is_cuda()) else "Pure-Torch"
+        l2_str = "Flush L2" if results[0].flush_l2_cache else "Keep L2"
         ax.set_title(
-            f'HBM Bandwidth | {self.device_name}\n'
-            f'L2 Cache: {self.l2_cache_mb:.0f} MB | Triton Autotune',
+            f'HBM Bandwidth | {self.device_name} | {impl_tag}\n'
+            f'L2 Cache: {self.l2_cache_mb:.0f} MB | {l2_str}',
             fontsize=13, fontweight='bold',
         )
         ax.legend(

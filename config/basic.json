@@ -11,7 +11,8 @@
         "num_iters": 20,
         "dry_run_iters": 5,
         "dtypes": ["float32", "bfloat16"],
-        "patterns": ["seq_copy", "seq_write", "strided_copy"]
+        "patterns": ["seq_copy", "seq_write", "strided_copy"],
+        "flush_l2_cache": true
     },
     "comm": {
         "num_iters": 20,

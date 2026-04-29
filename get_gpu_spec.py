@@ -17,22 +17,33 @@ from __future__ import annotations
 import sys
 from typing import Optional
 
+
+# 先检测 CUDA 可用性；CUDA 不可用时不再强制要求 cuda-python
+import os as _os
+_HAS_CUDA_PYTHON = False
+try:
+    import torch as _torch
+    _CUDA_AVAILABLE = _torch.cuda.is_available()
+except Exception:
+    _CUDA_AVAILABLE = False
+
 # ---------------------------------------------------------------------
 # 兼容不同版本的 cuda-python：
 #   - cuda-python >= 12.8 : from cuda.bindings import driver
 #   - cuda-python <  12.8 : from cuda import cuda as driver
+# 仅在 CUDA 可用时才尝试导入，NPU 环境下不依赖 cuda-python。
 # ---------------------------------------------------------------------
-try:
-    from cuda.bindings import driver as cu   # 新版 (>=12.8)
-except ImportError:  # pragma: no cover
+cu = None  # type: ignore
+if _CUDA_AVAILABLE:
     try:
-        from cuda import cuda as cu          # 老版
-    except ImportError as e:
-        sys.stderr.write(
-            "错误：未安装 cuda-python。请先执行 `pip install cuda-python`。\n"
-            f"详细信息: {e}\n"
-        )
-        sys.exit(1)
+        from cuda.bindings import driver as cu   # 新版 (>=12.8)
+        _HAS_CUDA_PYTHON = True
+    except ImportError:
+        try:
+            from cuda import cuda as cu          # 老版
+            _HAS_CUDA_PYTHON = True
+        except ImportError:
+            _HAS_CUDA_PYTHON = False
 
 
 # ---------------------------------------------------------------------
@@ -147,7 +158,7 @@ def print_size(label: str, nbytes: Optional[int]) -> None:
 # ---------------------------------------------------------------------
 # 设备查询
 # ---------------------------------------------------------------------
-def query_device(dev_id: int) -> None:
+def print_gpu_spec(dev_id: int) -> None:
     dev = _check(cu.cuDeviceGet(dev_id))
 
     # cuDeviceGetName(name_buffer_len, device) -> (CUresult, bytes)
@@ -252,35 +263,94 @@ def query_device(dev_id: int) -> None:
     print()
 
 
+def _try_print_npu_spec(dev_id: Optional[int] = None) -> bool:
+    """
+    尝试通过 torch_npu 打印 NPU 设备的简要规格。
+    成功返回 True, 否则返回 False。
+    """
+    try:
+        import torch
+        import torch_npu  # noqa: F401  # 导入后 torch.npu 才挂载
+    except Exception as e:
+        sys.stderr.write(f"[INFO] torch_npu 不可用: {e}\n")
+        return False
+
+    if not (hasattr(torch, "npu") and torch.npu.is_available()):
+        sys.stderr.write("[INFO] 未检测到可用的 NPU 设备。\n")
+        return False
+
+    dev_count = torch.npu.device_count()
+    try:
+        npu_ver = torch_npu.__version__  # type: ignore
+    except Exception:
+        npu_ver = "unknown"
+
+    print("=" * 71)
+    print(f"Ascend NPU (torch_npu = {npu_ver})")
+    print(f"Detected Devices    : {dev_count}")
+    print("=" * 71)
+
+    ids = [dev_id] if (dev_id is not None) else list(range(dev_count))
+    for i in ids:
+        if not (0 <= i < dev_count):
+            print(f"[WARNING] invalid npu id: {i}", file=sys.stderr)
+            continue
+        name = torch.npu.get_device_name(i)
+        try:
+            props = torch.npu.get_device_properties(i)
+            print(f"Device {i}: {name}")
+            print(f"props: {props}")
+            print("-" * 71)
+        except Exception:
+            props = None
+
+    return True
+
+
 # ---------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------
 def main() -> int:
-    _check(cu.cuInit(0))
-
-    device_count = int(_check(cu.cuDeviceGetCount()))
-    if device_count == 0:
-        print("No CUDA devices found.")
-        return 0
-
-    driver_version = int(_check(cu.cuDriverGetVersion()))
-    print(f"CUDA Driver Version : {driver_version // 1000}.{(driver_version % 1000) // 10}")
-    print(f"Detected Devices    : {device_count}\n")
-
+    # 解析 device id 参数
+    dev_id_arg: Optional[int] = None
     if len(sys.argv) >= 2:
         try:
-            dev_id = int(sys.argv[1])
+            dev_id_arg = int(sys.argv[1])
         except ValueError:
             print(f"Invalid device id: {sys.argv[1]}", file=sys.stderr)
             return 1
-        if not (0 <= dev_id < device_count):
-            print(f"Invalid device id {dev_id} (0..{device_count - 1})", file=sys.stderr)
-            return 1
-        query_device(dev_id)
-    else:
-        for i in range(device_count):
-            query_device(i)
 
+    # 优先走 CUDA 分支（需要 cuda-python 且 CUDA 可用）
+    if _CUDA_AVAILABLE and _HAS_CUDA_PYTHON:
+        _check(cu.cuInit(0))
+
+        device_count = int(_check(cu.cuDeviceGetCount()))
+        if device_count == 0:
+            print("No CUDA devices found.")
+            return 0
+
+        driver_version = int(_check(cu.cuDriverGetVersion()))
+        print(f"CUDA Driver Version : {driver_version // 1000}.{(driver_version % 1000) // 10}")
+        print(f"Detected Devices    : {device_count}\n")
+
+        if dev_id_arg is not None:
+            if not (0 <= dev_id_arg < device_count):
+                print(f"Invalid device id {dev_id_arg} (0..{device_count - 1})", file=sys.stderr)
+                return 1
+            print_gpu_spec(dev_id_arg)
+        else:
+            for i in range(device_count):
+                print_gpu_spec(i)
+        return 0
+
+    # CUDA 不可用或未安装 cuda-python：尝试打印 NPU 信息
+    if _try_print_npu_spec(dev_id_arg):
+        return 0
+
+    print("[ERROR] 未检测到可用的 CUDA 或 NPU 设备。", file=sys.stderr)
+    if not _HAS_CUDA_PYTHON and _CUDA_AVAILABLE:
+        print("[HINT] CUDA 可用但未安装 cuda-python，请执行: pip install cuda-python",
+              file=sys.stderr)
     return 0
 
 

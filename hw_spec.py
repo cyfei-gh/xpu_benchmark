@@ -7,6 +7,17 @@ import torch
 
 # Peak performance specs: bandwidth in GB/s, compute in TFLOPS/TOPS
 DEVICE_SPECS = {
+    "NVIDIA L20": {
+        "name": "L20",
+        "bandwidth": 864,        # 864 GB/s HBM bandwidth
+        "memory_capacity": 48,   # 48 GB
+        "l2_cache": 96,          # 96 MB
+        "float32": 59.8,         # CUDA core FP32
+        "float16": 119.5,        # Tensor Core FP16
+        "bfloat16": 119.5,       # Tensor Core BF16
+        "int8": 239,             # Tensor Core INT8
+        "float8_e4m3fn": 239,    # Tensor Core FP8
+    },
     "NVIDIA RTX PRO 5000": {
         "name": "RTX 5000",
         "bandwidth": 1344,
@@ -28,17 +39,6 @@ DEVICE_SPECS = {
         "bfloat16": 480,
         "int8": 960,
         "float8_e4m3fn": 960,
-    },
-    "NVIDIA L20": {
-        "name": "L20",
-        "bandwidth": 864,        # 864 GB/s HBM bandwidth
-        "memory_capacity": 48,   # 48 GB
-        "l2_cache": 96,          # 96 MB
-        "float32": 59.8,         # CUDA core FP32
-        "float16": 119.5,        # Tensor Core FP16
-        "bfloat16": 119.5,       # Tensor Core BF16
-        "int8": 239,             # Tensor Core INT8
-        "float8_e4m3fn": 239,    # Tensor Core FP8
     },
     "NVIDIA H20": {
         "name": "H20",
@@ -72,16 +72,27 @@ DEVICE_SPECS = {
         "bfloat16": 312,
         "int8": 624,
     },
-}
-
-# GEMM input -> output dtype mapping per backend
-DTYPE_OUTPUT_MAPPING = {
-    "nvidia": {
-        torch.float32: torch.float32,
-        torch.float16: torch.float16,
-        torch.bfloat16: torch.bfloat16,
-        torch.int8: torch.int32,
-        torch.float8_e4m3fn: torch.bfloat16,
+    "Ascend910B": {
+        "name": "Ascend 910B",
+        "bandwidth": 1600,
+        "memory_capacity": 64,
+        "l2_cache": 192,          # 192 MB
+        "float32": 67,            # FP32 Cube
+        "float16": 320,           # FP16 Cube
+        "bfloat16": 320,          # BF16 Cube
+        "int8": 640,              # INT8 Cube
+        "float8_e4m3fn": 640,     # FP8 Cube
+    },
+    "Ascend950PR": {
+        "name": "Ascend950PR_957b",
+        "bandwidth": 1600,
+        "memory_capacity": 128,
+        "l2_cache": 112,
+        "float32": 50,
+        "float16": 400,
+        "bfloat16": 400,
+        "int8": 800,
+        "float8_e4m3fn": 800,
     },
 }
 
@@ -92,6 +103,17 @@ DTYPE_FROM_STR = {
     "bfloat16": torch.bfloat16,
     "int8": torch.int8,
     "float8_e4m3fn": torch.float8_e4m3fn,
+    # TODO: torch.float4_e4m3fn: torch.float16,
+}
+
+# GEMM input -> output dtype mapping per backend
+DTYPE_OUTPUT_MAPPING = {
+    torch.float32: torch.float32,
+    torch.float16: torch.float16,
+    torch.bfloat16: torch.bfloat16,
+    torch.int8: torch.int32,
+    torch.float8_e4m3fn: torch.bfloat16,
+    # TODO: torch.float4_e4m3fn: torch.float16,
 }
 
 # Bytes per element for each dtype
@@ -101,6 +123,7 @@ DTYPE_BYTES = {
     torch.bfloat16: 2,
     torch.int8: 1,
     torch.float8_e4m3fn: 1,
+    # TODO: torch.float4_e4m3fn: 1,
 }
 
 def get_device_spec(device_name: str) -> dict:

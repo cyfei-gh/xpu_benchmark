@@ -52,7 +52,8 @@ from datetime import datetime
 # Allow running as script or module
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from xpu_benchmark import GemmBenchmark, MemBwBenchmark, LLMGemmBenchmark, CommBenchmark
+from xpu_benchmark import GemmBenchmark, MemBwBenchmark, CommBenchmark
+from xpu_benchmark import xpu_device as xpu
 
 
 def load_config(config_path: str) -> dict:
@@ -65,27 +66,28 @@ def get_device_prefix() -> str:
     """Get a short device name prefix for output file naming.
 
     Examples:
-        "NVIDIA L20"           -> "L20"
+        "NVIDIA L20"            -> "L20"
         "NVIDIA H100 80GB HBM3" -> "H100"
         "NVIDIA A100-SXM4-80GB" -> "A100"
+        "Ascend910B"            -> "Ascend910B"
     """
-    if not torch.cuda.is_available():
+    if not xpu.is_available():
         return "cpu"
-    name = torch.cuda.get_device_name(0)
+    name = xpu.get_device_name(0)
     # Remove vendor prefix
-    for vendor in ("NVIDIA ", "AMD ", "Intel "):
+    for vendor in ("NVIDIA ", "AMD ", "Intel ", "HUAWEI "):
         if name.startswith(vendor):
             name = name[len(vendor):]
             break
     # Take the first token, strip common suffixes
-    token = name.split()[0] if name else "gpu"
+    token = name.split()[0] if name else "xpu"
     token = token.split('-')[0]
     # Sanitize for filesystem
     token = ''.join(c if c.isalnum() else '_' for c in token)
-    return token or "gpu"
+    return token or "xpu"
 
 
-def run_llm_gemm(config: dict, output_dir: str = None, use_cuda_events: bool = False):
+def run_llm_gemm(config: dict, output_dir: str = None, use_events: bool = False):
     """Run LLM GEMM benchmark (QKV, Proj, FFN, MoE workloads) based on config."""
     cfg = config['llm_gemm']
     model_name = cfg.get('model', 'HY-image-3.0')
@@ -95,10 +97,10 @@ def run_llm_gemm(config: dict, output_dir: str = None, use_cuda_events: bool = F
     num_iters = cfg.get('num_iters', 30)
     dry_run_iters = cfg.get('dry_run_iters', 5)
 
-    bench = LLMGemmBenchmark(
+    bench = GemmBenchmark(
         num_iters=num_iters,
         dry_run_iters=dry_run_iters,
-        enable_cupti=not use_cuda_events,
+        enable_cupti=not use_events,
     )
 
     results = bench.run(
@@ -121,7 +123,7 @@ def run_llm_gemm(config: dict, output_dir: str = None, use_cuda_events: bool = F
     return results
 
 
-def run_membw(config: dict, output_dir: str = None, use_cuda_events: bool = False):
+def run_membw(config: dict, output_dir: str = None, use_events: bool = False):
     """Run memory bandwidth benchmark based on config."""
     cfg = config['memory']
     sizes_mb = cfg.get('sizes_mb', None)
@@ -129,11 +131,13 @@ def run_membw(config: dict, output_dir: str = None, use_cuda_events: bool = Fals
     dtypes = cfg.get('dtypes', ['float32'])
     num_iters = cfg.get('num_iters', 50)
     dry_run_iters = cfg.get('dry_run_iters', 10)
+    flush_l2_cache = cfg.get('flush_l2_cache', False)
 
     bench = MemBwBenchmark(
         num_iters=num_iters,
         dry_run_iters=dry_run_iters,
-        enable_cupti=not use_cuda_events,
+        enable_cupti=not use_events,
+        flush_l2_cache=flush_l2_cache,
     )
 
     results = bench.run(
@@ -147,9 +151,11 @@ def run_membw(config: dict, output_dir: str = None, use_cuda_events: bool = Fals
         os.makedirs(output_dir, exist_ok=True)
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         device_prefix = get_device_prefix()
-        csv_path = os.path.join(output_dir, f'{device_prefix}_membw_{timestamp}.csv')
+        # 文件名按缓存策略区分：HBM（flush L2） / L2（保留 L2）
+        cache_tag = 'HBM' if flush_l2_cache else 'L2'
+        csv_path = os.path.join(output_dir, f'{device_prefix}_membw_{cache_tag}_{timestamp}.csv')
         bench.save_csv(results, csv_path)
-        plot_path = os.path.join(output_dir, f'{device_prefix}_membw_{timestamp}.png')
+        plot_path = os.path.join(output_dir, f'{device_prefix}_membw_{cache_tag}_{timestamp}.png')
         bench.plot_size_bw_curve(results, plot_path)
 
     return results
@@ -208,20 +214,38 @@ def run_comm(config: dict, output_dir: str = None):
 
 
 def print_device_info():
-    """Print GPU device information."""
-    if not torch.cuda.is_available():
-        print("[ERROR] No CUDA device available.")
+    """Print GPU/NPU device information."""
+    if not xpu.is_available():
+        print("[ERROR] No XPU (CUDA / NPU) device available.")
         return
 
+    backend = xpu.backend()
     print(f"\n{'='*60}")
-    print("GPU Device Information")
+    print(f"XPU Device Information  (backend = {backend.upper()})")
     print(f"{'='*60}")
-    props = torch.cuda.get_device_properties(0)
-    print(f"  Name            : {props.name}")
-    print(f"  Total Memory    : {props.total_memory / 1024**3:.1f} GB")
-    print(f"  SM Count        : {props.multi_processor_count}")
-    print(f"  Compute Cap.    : {props.major}.{props.minor}")
-    print(f"  CUDA Version    : {torch.version.cuda}")
+    props = xpu.get_device_properties(0)
+    name = xpu.get_device_name(0)
+    print(f"  Name            : {name}")
+    if props is not None:
+        total_mem = getattr(props, 'total_memory', None)
+        if total_mem is not None:
+            print(f"  Total Memory    : {total_mem / 1024**3:.1f} GB")
+        sm_count = getattr(props, 'multi_processor_count', None)
+        if sm_count is not None:
+            print(f"  SM Count        : {sm_count}")
+        major = getattr(props, 'major', None)
+        minor = getattr(props, 'minor', None)
+        if major is not None and minor is not None:
+            print(f"  Compute Cap.    : {major}.{minor}")
+    if backend == 'cuda':
+        print(f"  CUDA Version    : {torch.version.cuda}")
+    elif backend == 'npu':
+        try:
+            import torch_npu
+            print(f"  torch_npu       : {torch_npu.__version__}")
+        except Exception:
+            pass
+    print(f"  Device Count    : {xpu.device_count()}")
     print(f"  PyTorch Version : {torch.__version__}")
     print(f"{'='*60}\n")
 
@@ -246,16 +270,15 @@ def main():
         help="Directory to save CSV/plot results",
     )
     parser.add_argument(
-        '--use_cuda_events',
+        '--use_events',
         action='store_true',
         help="Force CUDA Events timing (skip CUPTI even if available)",
     )
 
     args = parser.parse_args()
 
-    # Check CUDA
-    if not torch.cuda.is_available():
-        print("[ERROR] No CUDA device available. Exiting.")
+    if not xpu.is_available():
+        print("[ERROR] No XPU device available. Exiting.")
         sys.exit(1)
 
     # Print device info
@@ -280,10 +303,10 @@ def main():
 
     # Run benchmarks based on config sections
     if 'llm_gemm' in config:
-        run_llm_gemm(config, output_dir=args.output, use_cuda_events=args.use_cuda_events)
+        run_llm_gemm(config, output_dir=args.output, use_events=args.use_events)
 
     if 'memory' in config:
-        run_membw(config, output_dir=args.output, use_cuda_events=args.use_cuda_events)
+        run_membw(config, output_dir=args.output, use_events=args.use_events)
 
     if 'comm' in config:
         run_comm(config, output_dir=args.output)

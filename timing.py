@@ -1,21 +1,23 @@
 """
-GPU timing utilities.
+GPU/NPU timing utilities.
 
 Supports two timing methods:
-1. CUPTI (Preferred): Hardware-level profiling, most accurate GPU kernel time.
+1. CUPTI (Preferred, NVIDIA only): Hardware-level profiling.
    Requires cupti-python >= 13.0.0 (CUDA 13+).
-2. CUDA Events (Fallback): Standard CUDA event timing, good accuracy.
-   Automatically used if CUPTI is not available.
+2. Device Events (Fallback): Standard event timing, good accuracy.
+   Automatically used on NPU or when CUPTI is not available.
 """
 
 import torch
 import numpy as np
 from typing import Callable, Tuple, Any, Optional
 
-# Try to import CUPTI
+from . import xpu_device as xpu
+
+# Try to import CUPTI (NVIDIA only)
 try:
     import cupti
-    if hasattr(cupti, 'ProfilerContext'):
+    if hasattr(cupti, 'ProfilerContext') and xpu.is_cuda():
         CUPTI_AVAILABLE = True
     else:
         CUPTI_AVAILABLE = False
@@ -25,16 +27,16 @@ except ImportError:
 _cupti_warning_shown = False
 
 
-def _bench_with_cuda_events(
+def _bench_with_device_events(
     fn: Callable,
     args: tuple = (),
     kwargs: dict = None,
     num_iters: int = 30,
     dry_run_iters: int = 5,
-    cold_l2_cache: bool = False,
+    cold_l2_cache: bool = True,
 ) -> Tuple[float, float]:
     """
-    Benchmark a GPU function using CUDA Events.
+    Benchmark a GPU/NPU function using device Events.
 
     Returns:
         (median_time_ms, std_time_ms)
@@ -42,33 +44,34 @@ def _bench_with_cuda_events(
     if kwargs is None:
         kwargs = {}
 
+    device_str = xpu.default_device_str()
+
     # Warmup
     for _ in range(dry_run_iters):
         fn(*args, **kwargs)
-    torch.cuda.synchronize()
+    xpu.synchronize()
 
     times_ms = []
 
     if cold_l2_cache:
-        # Rotate buffers to flush L2 cache between iterations
-        # Allocate a large buffer to flush L2 (~96MB for L20)
+        # Allocate a large buffer to flush L2 (~96MB)
         flush_size = 96 * 1024 * 1024 // 4  # 96MB in float32 elements
-        flush_buf = torch.empty(flush_size, dtype=torch.float32, device='cuda')
+        flush_buf = torch.empty(flush_size, dtype=torch.float32, device=device_str)
 
     for _ in range(num_iters):
         if cold_l2_cache:
             # Touch the flush buffer to evict L2 cache
             flush_buf.fill_(0.0)
-            torch.cuda.synchronize()
+            xpu.synchronize()
 
-        start_event = torch.cuda.Event(enable_timing=True)
-        end_event = torch.cuda.Event(enable_timing=True)
+        start_event = xpu.Event(enable_timing=True)
+        end_event = xpu.Event(enable_timing=True)
 
         start_event.record()
         fn(*args, **kwargs)
         end_event.record()
 
-        torch.cuda.synchronize()
+        xpu.synchronize()
         times_ms.append(start_event.elapsed_time(end_event))
 
     times_arr = np.array(times_ms)
@@ -83,7 +86,7 @@ def _bench_with_cupti(
     dry_run_iters: int = 5,
 ) -> Tuple[float, float]:
     """
-    Benchmark a GPU function using CUPTI for hardware-level timing.
+    Benchmark a GPU function using CUPTI for hardware-level timing (CUDA only).
 
     Returns:
         (median_time_ms, std_time_ms)
@@ -94,20 +97,20 @@ def _bench_with_cupti(
     # Warmup
     for _ in range(dry_run_iters):
         fn(*args, **kwargs)
-    torch.cuda.synchronize()
+    xpu.synchronize()
 
     times_ms = []
     for _ in range(num_iters):
         with cupti.ProfilerContext() as ctx:
             fn(*args, **kwargs)
-            torch.cuda.synchronize()
+            xpu.synchronize()
         kernel_times = ctx.get_kernel_times_ms()
         if kernel_times:
             times_ms.append(sum(kernel_times))
 
     if not times_ms:
         # Fallback if CUPTI returned no data
-        return _bench_with_cuda_events(fn, args, kwargs, num_iters, dry_run_iters)
+        return _bench_with_device_events(fn, args, kwargs, num_iters, dry_run_iters)
 
     times_arr = np.array(times_ms)
     return float(np.median(times_arr)), float(np.std(times_arr))
@@ -120,38 +123,36 @@ def bench_gpu_time(
     enable_cupti: bool = True,
     num_iters: int = 30,
     dry_run_iters: int = 5,
-    cold_l2_cache: bool = False,
+    cold_l2_cache: bool = True,
 ) -> Tuple[float, float]:
     """
-    Benchmark a GPU function and return timing statistics.
+    Benchmark a device (GPU/NPU) function and return timing statistics.
 
-    Automatically uses CUPTI if available and enabled, otherwise falls back
-    to CUDA Events.
+    Automatically uses CUPTI if available and enabled (CUDA only), otherwise falls
+    back to device Events (works on both CUDA and NPU).
 
     Args:
         fn: The function to benchmark.
         args: Positional arguments to pass to fn.
         kwargs: Keyword arguments to pass to fn.
-        enable_cupti: Whether to try CUPTI timing (default True).
-                      Set to False to force CUDA Events.
+        enable_cupti: Whether to try CUPTI timing (default True, ignored on NPU).
         num_iters: Number of measurement iterations.
         dry_run_iters: Number of warmup iterations.
-        cold_l2_cache: If True, flush L2 cache between iterations (CUDA Events only).
+        cold_l2_cache: If True, flush L2 cache between iterations (events path only).
 
     Returns:
         (median_time_ms, std_time_ms): Median and std of kernel execution time in ms.
     """
-    if not torch.cuda.is_available():
-        raise RuntimeError("CUDA is not available.")
+    if not xpu.is_available():
+        raise RuntimeError("Neither CUDA nor NPU is available.")
 
     global _cupti_warning_shown
-    use_cupti = enable_cupti and CUPTI_AVAILABLE
+    use_cupti = enable_cupti and CUPTI_AVAILABLE and xpu.is_cuda()
 
-    if enable_cupti and not CUPTI_AVAILABLE and not _cupti_warning_shown:
+    if enable_cupti and xpu.is_cuda() and not CUPTI_AVAILABLE and not _cupti_warning_shown:
         _cupti_warning_shown = True
         try:
-            import cupti as _cupti_check
-            # Module exists but lacks ProfilerContext
+            import cupti as _cupti_check  # noqa: F401
             print("[WARNING] CUPTI module found but missing ProfilerContext API. "
                   "Try 'pip install -U cupti-python>=13.0.0' (requires CUDA 13+). "
                   "Falling back to CUDA events.")
@@ -163,6 +164,6 @@ def bench_gpu_time(
         try:
             return _bench_with_cupti(fn, args, kwargs, num_iters, dry_run_iters)
         except Exception as e:
-            print(f"[WARNING] CUPTI timing failed ({e}), falling back to CUDA events.")
+            print(f"[WARNING] CUPTI timing failed ({e}), falling back to device events.")
 
-    return _bench_with_cuda_events(fn, args, kwargs, num_iters, dry_run_iters, cold_l2_cache)
+    return _bench_with_device_events(fn, args, kwargs, num_iters, dry_run_iters, cold_l2_cache)
