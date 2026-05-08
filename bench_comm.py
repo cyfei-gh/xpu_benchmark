@@ -44,6 +44,7 @@ import torch
 import torch.distributed as dist
 
 from . import xpu_device as xpu
+from .hw_spec import get_device_prefix
 
 
 # ===================================================================
@@ -635,13 +636,12 @@ class CommBenchmark:
     def plot_comm_bw(
         self,
         results: List[CommBwResult],
-        output_dir: str = './results/',
         filename_prefix: str = 'comm_bw',
     ):
         """
         按 world_size 分图绘制 size-BW 曲线。
 
-        - 每个 world_size 保存一张图：`TP{ws}_{filename_prefix}.png`
+        - 每个 world_size 保存一张图：`{filename_prefix}_TP{ws}.png`
         - 同图中：颜色区分 operation，线型区分带宽类型（bus=虚线, algo=实线）
         - X 轴: data size per GPU (log scale)
         - Y 轴: bandwidth (GB/s)
@@ -679,7 +679,6 @@ class CommBenchmark:
 
         backend_name = xpu.dist_backend().upper()
         world_sizes_tested = sorted(set(r.world_size for r in results))
-        os.makedirs(output_dir, exist_ok=True)
 
         for ws in world_sizes_tested:
             ws_results = [r for r in results if r.world_size == ws]
@@ -765,7 +764,7 @@ class CommBenchmark:
                     rotation=45, ha='right', fontsize=8,
                 )
 
-            output_path = os.path.join(output_dir, f'TP{ws}_{filename_prefix}.png')
+            output_path = f'{filename_prefix}_TP{ws}.png'
             plt.tight_layout()
             plt.savefig(output_path, dpi=150, bbox_inches='tight')
             plt.close()
@@ -808,11 +807,6 @@ class CommBenchmark:
 # ===================================================================
 
 def main():
-    """
-    独立运行入口，使用 torchrun 启动，并通过 config JSON 文件读取参数：
-        torchrun --nproc_per_node=8 -m xpu_benchmark.bench_comm \\
-            --config ./config/basic.json --output ./results/
-    """
     parser = argparse.ArgumentParser(
         description="GPU Multi-Card Communication Bandwidth Benchmark",
     )
@@ -838,8 +832,8 @@ def main():
         sys.exit(1)
 
     if 'comm' not in config:
-        print(f"[ERROR] config 文件中未找到 'comm' 段: {args.config}")
-        sys.exit(1)
+        print(f"[WARNING] config 文件中未找到 'comm' 段: {args.config}")
+        sys.exit(0)
 
     cfg = config['comm']
     num_iters = cfg.get('num_iters', 50)
@@ -879,15 +873,11 @@ def main():
         os.makedirs(args.output, exist_ok=True)
         from datetime import datetime
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        device_prefix = get_device_prefix(bench.device_name)
 
-        csv_path = os.path.join(args.output, f'comm_bw_{timestamp}.csv')
-        bench.save_csv(results, csv_path)
-
-        bench.plot_comm_bw(
-            results,
-            output_dir=args.output,
-            filename_prefix=f'comm_bw_{timestamp}',
-        )
+        file_name = os.path.join(args.output, f'{device_prefix}_comm_bw_{timestamp}')
+        bench.save_csv(results, f'{file_name}.csv')
+        bench.plot_comm_bw(results, file_name)
 
     bench.cleanup()
 

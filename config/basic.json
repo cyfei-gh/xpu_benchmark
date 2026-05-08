@@ -7,7 +7,7 @@
         "num_iters": 10,
         "dry_run_iters": 5
     },
-    "memory_0": {
+    "memory": {
         "num_iters": 20,
         "dry_run_iters": 5,
         "dtypes": ["float32", "bfloat16"],

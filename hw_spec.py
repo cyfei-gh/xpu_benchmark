@@ -19,7 +19,7 @@ DEVICE_SPECS = {
         "float8_e4m3fn": 239,    # Tensor Core FP8
     },
     "NVIDIA RTX PRO 5000": {
-        "name": "RTX 5000",
+        "name": "Pro5000",
         "bandwidth": 1344,
         "memory_capacity": 72,
         "l2_cache": 96,           # 96 MB
@@ -30,7 +30,7 @@ DEVICE_SPECS = {
         "float8_e4m3fn": 500,
     },
     "NVIDIA RTX PRO 6000D": {
-        "name": "RTX 6000D",
+        "name": "Pro6000D",
         "bandwidth": 1800,
         "memory_capacity": 96,
         "l2_cache": 96,           # 96 MB
@@ -52,7 +52,7 @@ DEVICE_SPECS = {
         "float8_e4m3fn": 293,
     },
     "NVIDIA H100 SXM5": {
-        "name": "H100 SXM",
+        "name": "H100",
         "bandwidth": 3350,
         "memory_capacity": 80,
         "l2_cache": 50,           # 50 MB
@@ -63,7 +63,7 @@ DEVICE_SPECS = {
         "float8_e4m3fn": 1979,
     },
     "NVIDIA A100-SXM4-80GB": {
-        "name": "A100 SXM",
+        "name": "A100",
         "bandwidth": 2000,
         "memory_capacity": 80,
         "l2_cache": 40,           # 40 MB
@@ -73,7 +73,7 @@ DEVICE_SPECS = {
         "int8": 624,
     },
     "Ascend910B": {
-        "name": "Ascend 910B",
+        "name": "910B",
         "bandwidth": 1600,
         "memory_capacity": 64,
         "l2_cache": 192,          # 192 MB
@@ -84,7 +84,7 @@ DEVICE_SPECS = {
         "float8_e4m3fn": 640,     # FP8 Cube
     },
     "Ascend950PR": {
-        "name": "Ascend950PR_957b",
+        "name": "950PR",
         "bandwidth": 1600,
         "memory_capacity": 128,
         "l2_cache": 112,
@@ -139,6 +139,17 @@ def get_device_spec(device_name: str) -> dict:
         if key.lower() in device_name.lower() or device_name.lower() in key.lower():
             return spec
     return None
+
+
+def get_device_prefix(device_name: str) -> str:
+    """
+    Get device name prefix from spec.
+    Returns empty string if not found.
+    """
+    spec = get_device_spec(device_name)
+    if spec is None:
+        return ""
+    return spec.get("name", "")
 
 
 def get_peak_tflops(device_name: str, dtype_str: str) -> float:

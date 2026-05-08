@@ -11,7 +11,7 @@
 #   优先使用外部环境变量 CUDA_VISIBLE_DEVICES，否则使用 default_devices_list
 #
 # 示例：
-#   bash run.sh gpu 8 ./config/deepseek.json
+#   bash run.sh gpu 8 ./config/deepseek.json | tee "bench.log"
 #   bash run.sh npu 4 ./config/basic.json
 #   bash run.sh cpu 2
 
@@ -111,20 +111,13 @@ echo "config          : ${CONFIG}"
 echo "----------------------------------------"
 
 # ---------------------------------------------------------------------
-# 打印设备硬件信息
-# ---------------------------------------------------------------------
-python3 "${SCRIPT_DIR}/get_gpu_spec.py" 0 || true
-
-# ---------------------------------------------------------------------
 # 运行 GEMM / MemBw / LLM_GEMM / Comm benchmark
+# （设备硬件信息由 xpu_benchmark.__main__.print_device_info 打印）
 # ---------------------------------------------------------------------
-# python3 -m xpu_benchmark \
-#     --config "${CONFIG}" \
-#     --output "${OUTPUT_DIR}" | tee "${OUTPUT_DIR}/benchmark.log"
+python3 -m xpu_benchmark --config "${CONFIG}" --output "${OUTPUT_DIR}"
 
 # ---------------------------------------------------------------------
 # 运行通信 benchmark（多进程，后端自动匹配 nccl / hccl / gloo）
 # ---------------------------------------------------------------------
 torchrun --nproc_per_node=${NPROC} -m xpu_benchmark.bench_comm \
-    --config "${CONFIG}" \
-    --output "${OUTPUT_DIR}"
+    --config "${CONFIG}" --output "${OUTPUT_DIR}"

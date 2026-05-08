@@ -1,4 +1,5 @@
 build
+*.log
 *.so
 *.egg-info/
 __pycache__/
