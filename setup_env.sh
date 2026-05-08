@@ -4,9 +4,9 @@
 # 安装 CUDA 版 PyTorch 2.9
 # 目标 GPU : RTX PRO 5000 (Blackwell, sm_120)
 # 驱动     : 580.105.08  (CUDA 13.0 max)
-# 方案     : python venv + pip wheel (cu128)
+# 方案     : python venv + pip wheel (cu129)
 # ------------------------------------------------------------
-# python3 -m pip install torch==2.9.0 --index-url "https://download.pytorch.org/whl/cu128" triton==3.5.0
+# python3 -m pip install torch==2.9.0 --index-url "https://download.pytorch.org/whl/cu129" triton==3.5.0
 
 echo "==> 5) Smoke test"
 python3 - <<'PY'

@@ -8,7 +8,8 @@ GPU 多卡通信带宽 Benchmark。
 数据量范围：4KB ~ 512MB，绘制 数据量-带宽 曲线。
 
 Usage (standalone):
-    torchrun --nproc_per_node=8 -m xpu_benchmark.bench_comm
+    torchrun --nproc_per_node=8 -m xpu_benchmark.bench_comm \\
+            --config ./config/basic.json --output ./results/
 
 Usage (via xpu_benchmark main entry):
     在 config JSON 中添加 "comm" section:
@@ -16,13 +17,13 @@ Usage (via xpu_benchmark main entry):
         "comm": {
             "num_iters": 50,
             "dry_run_iters": 10,
-            "world_size": [2, 4, 8],
+            "world_sizes": [2, 4, 8],
             "operations": ["allreduce", "allgather", "all2all", "all2allv"],
             "dtype": "bfloat16"
         }
     }
 
-    world_size 参数说明：
+    world_sizes 参数说明：
     - 支持整数或列表，例如 8 或 [1, 2, 4, 8]
     - 列表模式下会依次测试不同 rank 数，通过 NCCL sub-group 实现
     - 每个 world_size 必须 <= torchrun 启动的总进程数
@@ -61,16 +62,6 @@ class CommBwResult:
     bus_bandwidth_gbps: float  # Bus 带宽 (GB/s)
     algo_bandwidth_gbps: float  # 算法带宽 (GB/s)
     device_name: str
-
-    def __str__(self) -> str:
-        size_str = _format_size(self.data_size_bytes)
-        return (
-            f"op={self.operation:<12} size={size_str:>8} | "
-            f"world_size={self.world_size} | dtype={self.dtype:<8} | "
-            f"time={self.median_time_ms:.3f}±{self.std_time_ms:.3f}ms | "
-            f"bus_bw={self.bus_bandwidth_gbps:.2f}GB/s | "
-            f"algo_bw={self.algo_bandwidth_gbps:.2f}GB/s"
-        )
 
 
 # ===================================================================
@@ -196,44 +187,92 @@ def _run_all2all(tensor: torch.Tensor, world_size: int, group=None):
     dist.all_to_all(output_list, input_list, group=group)
     return output_list
 
+def _build_moe_send_matrix(total_elements: int, world_size: int) -> List[List[int]]:
+    """
+    构建模拟 MoE 场景的 send_matrix。
+
+    send_matrix[i][j] 表示 rank i 向 rank j 发送的元素数量。
+
+    关键特性：
+    1. **全局一致性**：基于固定 seed + (i, j) 的确定性伪随机，
+       所有 rank 独立计算得到完全相同的 send_matrix，无需通信协商。
+    2. **对称匹配**：rank i 的 input_splits[j] == rank j 的 output_splits[i] == send_matrix[i][j]，
+       保证 all_to_all_single 不 hang。
+    3. **MoE 风格不均匀**：每行使用不均匀权重（模拟 token 被路由到不同专家的负载差异），
+       典型热点专家收到 2~4x 平均负载，冷门专家仅收到 0.2~0.5x。
+    4. **Row-sum 约束**：每行之和严格等于 total_elements（对应 rank i 发送 buffer 的完整使用）。
+
+    注意：列和（rank j 接收总量）会自然产生不均匀差异，这正是 MoE 场景的特征。
+
+    Args:
+        total_elements: 每个 rank 发送 buffer 的总元素数。
+        world_size: 参与通信的 rank 数。
+
+    Returns:
+        send_matrix: world_size × world_size 的整数矩阵。
+    """
+    # 使用 numpy 的确定性 RNG，保证所有 rank 独立生成完全一致的矩阵
+    rng = np.random.RandomState(seed=0xA11_2A11 ^ (world_size * 131))
+    # 为每个 (i, j) 生成权重 ∈ [0.2, 3.0]，呈对数均匀分布以拉大热/冷专家差距
+    log_w = rng.uniform(np.log(0.2), np.log(3.0), size=(world_size, world_size))
+    weights = np.exp(log_w)
+
+    send_matrix: List[List[int]] = []
+    for i in range(world_size):
+        w_row = weights[i]
+        # 按权重分配元素数，至少每格 1 个（避免空发送导致的驱动实现差异）
+        raw = w_row / w_row.sum() * total_elements
+        row = [max(1, int(x)) for x in raw]
+
+        # 微调：使 row 之和严格等于 total_elements
+        diff = total_elements - sum(row)
+        if diff > 0:
+            # 把剩余元素加到最大的那一格（通常是热点专家）
+            idx = int(np.argmax(row))
+            row[idx] += diff
+        elif diff < 0:
+            # 超出则从最大的几格中减掉（保证仍 >= 1）
+            remaining = -diff
+            order = np.argsort(row)[::-1]  # 从大到小
+            for idx in order:
+                take = min(remaining, row[idx] - 1)
+                if take > 0:
+                    row[idx] -= take
+                    remaining -= take
+                if remaining == 0:
+                    break
+
+        send_matrix.append(row)
+
+    return send_matrix
+
 
 def _run_all2allv(tensor: torch.Tensor, world_size: int, rank: int, group=None):
     """
-    执行 All2Allv (非均匀分块)。
+    执行 All2Allv (非均匀分块)，模拟 MoE 场景的不均匀 token 分发。
 
-    模拟 MoE 场景中不均匀的 token 分发：
-    每个 rank 向不同目标发送不同大小的数据块。
+    实现要点（避免 hang）：
+      all_to_all_single 要求 rank i 的 input_splits[j] 必须等于 rank j 的
+      output_splits[i]，否则对端收发量不匹配会永久等待。
+
+    Args:
+        tensor: 发送缓冲区（一维），长度为 total_elements。
+        world_size: 参与通信的 rank 数。
+        rank: 当前 rank 在子组中的索引（0 ~ world_size-1）。
+        group: process group。
     """
     total_elements = tensor.numel()
-    # 生成非均匀的分割方案：线性递增分配
-    # rank i 向 rank j 发送 base + j 个 chunk
-    base_chunk = total_elements // (world_size + world_size * (world_size - 1) // 2)
-    base_chunk = max(1, base_chunk)
+    send_matrix = _build_moe_send_matrix(total_elements, world_size)
+    input_splits = send_matrix[rank] # 发送量
+    output_splits = [send_matrix[i][rank] for i in range(world_size)] # 接收量
 
-    input_splits = []
-    for j in range(world_size):
-        input_splits.append(base_chunk * (j + 1))
-
-    # 调整最后一个 split 以确保总和等于 total_elements
-    current_sum = sum(input_splits)
-    if current_sum != total_elements:
-        # 重新按比例分配
-        ratio = total_elements / current_sum
-        input_splits = [max(1, int(s * ratio)) for s in input_splits]
-        diff = total_elements - sum(input_splits)
-        input_splits[-1] += diff
-
-    # 输出 splits：从其他 rank 接收的数据量
-    # 简化处理：假设对称分布（实际 MoE 中可能不对称）
-    output_splits = input_splits.copy()
-
-    input_tensor = tensor[:sum(input_splits)]
-    output_tensor = torch.empty(sum(output_splits), dtype=tensor.dtype, device=tensor.device)
+    total_recv = sum(output_splits)
+    output_tensor = torch.empty(total_recv, dtype=tensor.dtype, device=tensor.device)
 
     dist.all_to_all_single(
-        output_tensor, input_tensor,
-        output_split_sizes=output_splits,
-        input_split_sizes=input_splits,
+        output_tensor, tensor,
+        output_split_sizes=output_splits, # 接收量
+        input_split_sizes=input_splits, # 发送量
         group=group,
     )
     return output_tensor
@@ -249,17 +288,6 @@ class CommBenchmark:
 
     使用 torch.distributed (NCCL / HCCL backend) 测试多卡间集合通信操作的有效带宽。
     支持 AllReduce、AllGather、All2All、All2Allv 四种通信原语。
-
-    Example usage:
-        bench = CommBenchmark(num_iters=50, dry_run_iters=10)
-        results = bench.run(
-            sizes_bytes=[4096, 65536, 1048576, 16777216, 536870912],
-            operations=['allreduce', 'allgather', 'all2all', 'all2allv'],
-            dtype='bfloat16',
-        )
-        if bench.rank == 0:
-            bench.print_summary(results)
-            bench.plot(results, 'comm_bw_curve.png')
     """
 
     SUPPORTED_OPS = ['allreduce', 'allgather', 'all2all', 'all2allv']
@@ -485,13 +513,9 @@ class CommBenchmark:
                 if self.rank == 0:
                     print(f"[WARNING] world_size={ws} > 实际进程数 {self.world_size}，跳过")
                 continue
-            if ws < 1:
+            if ws <= 1:
                 if self.rank == 0:
                     print(f"[WARNING] world_size={ws} 无效，跳过")
-                continue
-            if ws == 1:
-                if self.rank == 0:
-                    print(f"[WARNING] world_size=1 无通信意义，跳过")
                 continue
             valid_world_sizes.append(ws)
 
@@ -608,20 +632,19 @@ class CommBenchmark:
                     print("N/A")
             print(f"  └{'─'*40}")
 
-    def plot(
+    def plot_comm_bw(
         self,
         results: List[CommBwResult],
-        output_path: str = 'comm_bw_curve.png',
+        output_dir: str = './results/',
+        filename_prefix: str = 'comm_bw',
     ):
         """
-        在一张图上绘制所有通信操作的 数据量-算法带宽 曲线。
+        按 world_size 分图绘制 size-BW 曲线。
 
-        X 轴为数据量 (log scale)，Y 轴为 Algorithm Bandwidth (GB/s)。
-        不同操作用不同颜色和标记区分。
-
-        Args:
-            results: 测试结果列表。
-            output_path: 输出图片路径。
+        - 每个 world_size 保存一张图：`TP{ws}_{filename_prefix}.png`
+        - 同图中：颜色区分 operation，线型区分带宽类型（bus=虚线, algo=实线）
+        - X 轴: data size per GPU (log scale)
+        - Y 轴: bandwidth (GB/s)
         """
         if self.rank != 0:
             return
@@ -639,90 +662,114 @@ class CommBenchmark:
             print("[WARNING] 无结果可绘制。")
             return
 
-        # 配色方案：为每个 (operation, world_size) 组合分配颜色和样式
-        base_colors = {
-            'allreduce': '#E53935',
-            'allgather': '#1E88E5',
-            'all2all':   '#43A047',
-            'all2allv':  '#FB8C00',
+        # operation -> 颜色 + 可读 label
+        op_style_map = {
+            'allreduce': {'color': '#E53935', 'label': 'AllReduce'},
+            'allgather': {'color': '#1E88E5', 'label': 'AllGather'},
+            'all2all':   {'color': '#43A047', 'label': 'All2All'},
+            'all2allv':  {'color': '#FB8C00', 'label': 'All2Allv'},
         }
-        markers = ['o', 's', '^', 'D', 'v', 'p', '*', 'X']
-        linestyles = ['-', '--', '-.', ':']
+        default_colors = ['#00BCD4', '#795548', '#607D8B', '#E91E63', '#3F51B5']
 
-        fig, ax = plt.subplots(figsize=(14, 8))
+        # 带宽类型 -> 线型 + marker
+        bw_style_map = {
+            'algo': {'linestyle': '-',  'marker': 'o'},
+            'bus':  {'linestyle': '-.', 'marker': '^'},
+        }
 
-        # 获取所有 (operation, world_size) 组合
+        backend_name = xpu.dist_backend().upper()
         world_sizes_tested = sorted(set(r.world_size for r in results))
-        operations = sorted(set(r.operation for r in results))
+        os.makedirs(output_dir, exist_ok=True)
 
-        line_idx = 0
-        for op in operations:
-            for ws_idx, ws in enumerate(world_sizes_tested):
+        for ws in world_sizes_tested:
+            ws_results = [r for r in results if r.world_size == ws]
+            if not ws_results:
+                continue
+
+            operations = sorted(set(r.operation for r in ws_results))
+            fig, ax = plt.subplots(figsize=(13, 7.5))
+
+            for i, op in enumerate(operations):
+                op_style = op_style_map.get(op, {
+                    'color': default_colors[i % len(default_colors)],
+                    'label': op,
+                })
+                color = op_style['color']
+                op_label = op_style['label']
+
                 op_results = sorted(
-                    [r for r in results if r.operation == op and r.world_size == ws],
+                    [r for r in ws_results if r.operation == op],
                     key=lambda r: r.data_size_bytes,
                 )
                 if not op_results:
                     continue
 
                 sizes = [r.data_size_bytes for r in op_results]
-                bws = [r.algo_bandwidth_gbps for r in op_results]
+                algo_bws = [r.algo_bandwidth_gbps for r in op_results]
+                bus_bws = [r.bus_bandwidth_gbps for r in op_results]
 
-                color = base_colors.get(op, '#757575')
-                marker = markers[ws_idx % len(markers)]
-                linestyle = linestyles[ws_idx % len(linestyles)]
-
-                # 生成标签
-                label_map = {
-                    'allreduce': f'AllReduce_TP{ws}',
-                    'allgather': f'AllGather_TP{ws}',
-                    'all2all': f'All2All_TP{ws}',
-                    'all2allv': f'All2Allv_TP{ws}',
-                }
-                label = label_map.get(op, f'{op}(ws={ws})')
-
+                # algo 带宽（实线）
                 ax.plot(
-                    sizes, bws,
+                    sizes, algo_bws,
                     color=color,
-                    marker=marker,
-                    markersize=7,
-                    linewidth=2.2,
-                    linestyle=linestyle,
-                    label=label,
-                    alpha=0.85,
+                    linestyle=bw_style_map['algo']['linestyle'],
+                    marker=bw_style_map['algo']['marker'],
+                    markersize=6,
+                    linewidth=2,
+                    label=f'{op_label} [algo]',
+                    alpha=0.9,
                 )
-                line_idx += 1
+                # 仅在 algo 曲线上标注带宽数值（GB/s），避免与 bus 曲线文字重叠
+                for x, y in zip(sizes, algo_bws):
+                    ax.annotate(
+                        f'{y:.0f}',
+                        xy=(x, y),
+                        xytext=(0, 6),
+                        textcoords='offset points',
+                        fontsize=7,
+                        color=color,
+                        ha='center',
+                        va='bottom',
+                        alpha=0.85,
+                    )
+                # bus 带宽（虚线）
+                ax.plot(
+                    sizes, bus_bws,
+                    color=color,
+                    linestyle=bw_style_map['bus']['linestyle'],
+                    marker=bw_style_map['bus']['marker'],
+                    markersize=6,
+                    linewidth=2,
+                    label=f'{op_label} [bus]',
+                    alpha=0.9,
+                )
 
-        # X 轴设置
-        ax.set_xscale('log', base=2)
-        ax.set_xlabel('Data Size per GPU', fontsize=13)
-        ax.set_ylabel('Algorithm Bandwidth (GB/s)', fontsize=13)
+            ax.set_xscale('log', base=2)
+            ax.set_xlabel('Data Size per Rank', fontsize=12)
+            ax.set_ylabel('Bandwidth (GB/s)', fontsize=12)
+            ax.set_title(
+                f'{backend_name} Bandwidth | {self.device_name}\n'
+                f'world_size = {ws}',
+                fontsize=13, fontweight='bold',
+            )
+            ax.legend(loc='upper left', fontsize=9, framealpha=0.9)
+            ax.grid(True, alpha=0.3, which='both')
+            ax.tick_params(labelsize=10)
+            ax.set_ylim(bottom=0)
 
-        ws_str = ','.join(str(ws) for ws in world_sizes_tested)
-        backend_name = xpu.dist_backend().upper()
-        ax.set_title(
-            f'{backend_name} Bandwidth\n'
-            f'{self.device_name} | World Sizes: [{ws_str}]',
-            fontsize=14, fontweight='bold',
-        )
+            all_sizes = sorted(set(r.data_size_bytes for r in ws_results))
+            if len(all_sizes) <= 20:
+                ax.set_xticks(all_sizes)
+                ax.set_xticklabels(
+                    [_format_size(s) for s in all_sizes],
+                    rotation=45, ha='right', fontsize=8,
+                )
 
-        # 自定义 X 轴刻度标签
-        all_sizes = sorted(set(r.data_size_bytes for r in results))
-        ax.set_xticks(all_sizes)
-        tick_labels = [_format_size(s) for s in all_sizes]
-        ax.set_xticklabels(tick_labels, rotation=45, ha='right', fontsize=9)
-
-        ax.legend(loc='upper left', fontsize=10, framealpha=0.9, ncol=2)
-        ax.grid(True, alpha=0.3, which='both')
-        ax.tick_params(labelsize=10)
-
-        # Y 轴从 0 开始
-        ax.set_ylim(bottom=0)
-
-        plt.tight_layout()
-        plt.savefig(output_path, dpi=150, bbox_inches='tight')
-        plt.close()
-        print(f"[INFO] 通信带宽曲线图已保存: {output_path}")
+            output_path = os.path.join(output_dir, f'TP{ws}_{filename_prefix}.png')
+            plt.tight_layout()
+            plt.savefig(output_path, dpi=150, bbox_inches='tight')
+            plt.close()
+            print(f"[INFO] Comm BW curve (TP{ws}) saved to: {output_path}")
 
     def save_csv(self, results: List[CommBwResult], path: str):
         """保存测试结果到 CSV 文件（仅 rank 0）。"""
@@ -762,51 +809,68 @@ class CommBenchmark:
 
 def main():
     """
-    独立运行入口，使用 torchrun 启动：
-        torchrun --nproc_per_node=8 -m xpu_benchmark.bench_comm
+    独立运行入口，使用 torchrun 启动，并通过 config JSON 文件读取参数：
+        torchrun --nproc_per_node=8 -m xpu_benchmark.bench_comm \\
+            --config ./config/basic.json --output ./results/
     """
     parser = argparse.ArgumentParser(
         description="GPU Multi-Card Communication Bandwidth Benchmark",
     )
     parser.add_argument(
+        '--config', type=str, required=True,
+        help="benchmark 配置文件路径（JSON 格式），需包含 'comm' 段",
+    )
+    parser.add_argument(
         '--output', type=str, default='./results/',
         help="输出目录",
-    )
-    parser.add_argument(
-        '--num_iters', type=int, default=50,
-        help="测量迭代次数",
-    )
-    parser.add_argument(
-        '--dry_run_iters', type=int, default=10,
-        help="预热迭代次数",
-    )
-    parser.add_argument(
-        '--dtype', type=str, default='bfloat16',
-        help="数据类型 (float32, float16, bfloat16)",
-    )
-    parser.add_argument(
-        '--operations', type=str, nargs='+',
-        default=['allreduce', 'allgather', 'all2all'],
-        help="要测试的通信操作",
-    )
-    parser.add_argument(
-        '--world_size', type=int, nargs='+',
-        default=None,
-        help="要测试的 rank 数列表，例如 --world_size 2 4 8。"
-             "默认使用 torchrun 启动的全部进程数。",
     )
 
     args = parser.parse_args()
 
+    # -----------------------------------------------------------------
+    # 从 config JSON 读取 comm 段参数
+    # -----------------------------------------------------------------
+    try:
+        with open(args.config, 'r') as f:
+            config = json.load(f)
+    except Exception as e:
+        print(f"[ERROR] 读取 config 失败: {args.config} -> {e}")
+        sys.exit(1)
+
+    if 'comm' not in config:
+        print(f"[ERROR] config 文件中未找到 'comm' 段: {args.config}")
+        sys.exit(1)
+
+    cfg = config['comm']
+    num_iters = cfg.get('num_iters', 50)
+    dry_run_iters = cfg.get('dry_run_iters', 10)
+    operations = cfg.get('operations',
+                         ['allreduce', 'allgather', 'all2all', 'all2allv'])
+    dtype = cfg.get('dtype', 'bfloat16')
+    sizes_bytes = cfg.get('sizes_bytes', None)
+    world_sizes = cfg.get('world_sizes', None)
+
+    # -----------------------------------------------------------------
+    # 执行 benchmark
+    # -----------------------------------------------------------------
     bench = CommBenchmark(
-        num_iters=args.num_iters,
-        dry_run_iters=args.dry_run_iters,
+        num_iters=num_iters,
+        dry_run_iters=dry_run_iters,
     )
 
+    if bench.rank == 0:
+        print(f"[INFO] Loaded comm config from: {args.config}")
+        print(f"[INFO]   num_iters     = {num_iters}")
+        print(f"[INFO]   dry_run_iters = {dry_run_iters}")
+        print(f"[INFO]   operations    = {operations}")
+        print(f"[INFO]   dtype         = {dtype}")
+        print(f"[INFO]   world_sizes   = {world_sizes}")
+
     results = bench.run(
-        operations=args.operations,
-        dtype=args.dtype,
-        world_sizes=args.world_size,
+        sizes_bytes=sizes_bytes,
+        operations=operations,
+        dtype=dtype,
+        world_sizes=world_sizes,
     )
 
     if bench.rank == 0:
@@ -819,8 +883,11 @@ def main():
         csv_path = os.path.join(args.output, f'comm_bw_{timestamp}.csv')
         bench.save_csv(results, csv_path)
 
-        plot_path = os.path.join(args.output, f'comm_bw_{timestamp}.png')
-        bench.plot(results, plot_path)
+        bench.plot_comm_bw(
+            results,
+            output_dir=args.output,
+            filename_prefix=f'comm_bw_{timestamp}',
+        )
 
     bench.cleanup()
 

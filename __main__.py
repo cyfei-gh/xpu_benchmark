@@ -161,58 +161,6 @@ def run_membw(config: dict, output_dir: str = None, use_events: bool = False):
     return results
 
 
-def run_comm(config: dict, output_dir: str = None):
-    """Run communication bandwidth benchmark based on config.
-
-    注意：comm benchmark 需要通过 torchrun 启动多进程环境。
-    如果当前未处于分布式环境，会尝试初始化单卡模式。
-    """
-    cfg = config['comm']
-    num_iters = cfg.get('num_iters', 50)
-    dry_run_iters = cfg.get('dry_run_iters', 10)
-    operations = cfg.get('operations', ['allreduce', 'allgather', 'all2all', 'all2allv'])
-    dtype = cfg.get('dtype', 'bfloat16')
-    sizes_bytes = cfg.get('sizes_bytes', None)
-
-    # 解析 world_size 参数：支持整数或列表
-    world_size_cfg = cfg.get('world_size', None)
-    if world_size_cfg is not None:
-        if isinstance(world_size_cfg, int):
-            world_sizes = [world_size_cfg]
-        elif isinstance(world_size_cfg, list):
-            world_sizes = world_size_cfg
-        else:
-            world_sizes = None
-    else:
-        world_sizes = None
-
-    bench = CommBenchmark(
-        num_iters=num_iters,
-        dry_run_iters=dry_run_iters,
-    )
-
-    results = bench.run(
-        sizes_bytes=sizes_bytes,
-        operations=operations,
-        dtype=dtype,
-        world_sizes=world_sizes,
-    )
-
-    if bench.rank == 0:
-        bench.print_summary(results)
-
-        if output_dir:
-            os.makedirs(output_dir, exist_ok=True)
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            device_prefix = get_device_prefix()
-            csv_path = os.path.join(output_dir, f'{device_prefix}_comm_bw_{timestamp}.csv')
-            bench.save_csv(results, csv_path)
-            plot_path = os.path.join(output_dir, f'{device_prefix}_comm_bw_{timestamp}.png')
-            bench.plot(results, plot_path)
-
-    return results
-
-
 def print_device_info():
     """Print GPU/NPU device information."""
     if not xpu.is_available():
@@ -308,8 +256,8 @@ def main():
     if 'memory' in config:
         run_membw(config, output_dir=args.output, use_events=args.use_events)
 
-    if 'comm' in config:
-        run_comm(config, output_dir=args.output)
+    # if 'comm' in config:
+    #     run_comm(config, output_dir=args.output)
 
     print("\n[INFO] Benchmark complete.")
 

@@ -7,7 +7,7 @@
         "num_iters": 10,
         "dry_run_iters": 5
     },
-    "memory": {
+    "memory_0": {
         "num_iters": 20,
         "dry_run_iters": 5,
         "dtypes": ["float32", "bfloat16"],
@@ -18,6 +18,7 @@
         "num_iters": 20,
         "dry_run_iters": 5,
         "operations": ["allreduce", "allgather", "all2all", "all2allv"],
-        "dtype": "bfloat16"
+        "dtype": "bfloat16",
+        "world_sizes": [2, 4, 8]
     }
 }

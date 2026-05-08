@@ -8,9 +8,10 @@
 #             （gpu 等同于 cuda，使用 NCCL；npu 使用 HCCL；cpu 使用 Gloo）
 #   nproc   : 通信 benchmark 参与的进程/卡数（torchrun --nproc_per_node）
 #   config  : 可选，benchmark 配置文件路径，默认 config/basic.json
+#   优先使用外部环境变量 CUDA_VISIBLE_DEVICES，否则使用 default_devices_list
 #
 # 示例：
-#   bash run.sh gpu 8
+#   bash run.sh gpu 8 ./config/deepseek.json
 #   bash run.sh npu 4 ./config/basic.json
 #   bash run.sh cpu 2
 
@@ -64,16 +65,16 @@ echo "xpu_benchmark  (backend = ${BACKEND})"
 echo "========================================"
 
 # ---------------------------------------------------------------------
-# 设置可见设备 & 通信后端
+# 优先使用外部环境变量 CUDA_VISIBLE_DEVICES，否则使用 default_devices_list
 # ---------------------------------------------------------------------
 if [[ "${BACKEND}" == "cuda" ]]; then
-    # 默认暴露 8 卡，可由外部 CUDA_VISIBLE_DEVICES 覆盖
+    # 生成 default_devices_list = {0, 1, 2, ... , NPROC}
     DEFAULT_CUDA_DEVICES=""
     for ((i=0; i<NPROC; i++)); do
         if [[ -z "${DEFAULT_CUDA_DEVICES}" ]]; then
-            DEFAULT_CUDA_DEVICES="${i}"
+            DEFAULT_CUDA_DEVICES="${i}" # 如果是第一个设备，直接赋值
         else
-            DEFAULT_CUDA_DEVICES="${DEFAULT_CUDA_DEVICES},${i}"
+            DEFAULT_CUDA_DEVICES="${DEFAULT_CUDA_DEVICES},${i}" # 后续设备用逗号分隔
         fi
     done
     export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-${DEFAULT_CUDA_DEVICES}}
@@ -115,13 +116,15 @@ echo "----------------------------------------"
 python3 "${SCRIPT_DIR}/get_gpu_spec.py" 0 || true
 
 # ---------------------------------------------------------------------
-# 运行 GEMM / MemBw / LLM_GEMM benchmark（单卡即可）
+# 运行 GEMM / MemBw / LLM_GEMM / Comm benchmark
 # ---------------------------------------------------------------------
-python3 -m xpu_benchmark \
-    --config "${CONFIG}" \
-    --output "${OUTPUT_DIR}" | tee "${OUTPUT_DIR}/benchmark.log"
+# python3 -m xpu_benchmark \
+#     --config "${CONFIG}" \
+#     --output "${OUTPUT_DIR}" | tee "${OUTPUT_DIR}/benchmark.log"
 
 # ---------------------------------------------------------------------
 # 运行通信 benchmark（多进程，后端自动匹配 nccl / hccl / gloo）
 # ---------------------------------------------------------------------
-torchrun --nproc_per_node=${NPROC} -m xpu_benchmark.bench_comm --output "${OUTPUT_DIR}"
+torchrun --nproc_per_node=${NPROC} -m xpu_benchmark.bench_comm \
+    --config "${CONFIG}" \
+    --output "${OUTPUT_DIR}"
