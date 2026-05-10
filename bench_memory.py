@@ -29,11 +29,11 @@ from .hw_spec import get_peak_bandwidth, get_l2_cache_size
 try:
     import triton
     import triton.language as tl
-    HAS_TRITON = True
+    USE_TRITON = True if xpu.is_cuda() else False
 except ImportError:
     triton = None
     tl = None
-    HAS_TRITON = False
+    USE_TRITON = False
 
 
 # ===================================================================
@@ -53,7 +53,7 @@ def _get_autotune_configs():
     - 每个 thread 至少处理 2 个元素（BLOCK_SIZE >= num_warps * 32 * 2），
       否则向量化 load 的收益会被吃掉；这也自动过滤了一些明显劣配。
     """
-    if not HAS_TRITON:
+    if not USE_TRITON:
         return []
     block_sizes = [1024] # [128, 1024, 8192]
     warp_options = [4] #[4, 8]
@@ -77,11 +77,11 @@ def _get_autotune_configs():
 
 
 # 预先计算一次，避免多个 kernel 各自重复构造
-_AUTOTUNE_CONFIGS = _get_autotune_configs() if HAS_TRITON else []
+_AUTOTUNE_CONFIGS = _get_autotune_configs() if USE_TRITON else []
 
 
 # ===================================================================
-# Triton kernels (with autotune) —— 仅在 HAS_TRITON 时定义
+# Triton kernels (with autotune) —— 仅在 USE_TRITON 时定义
 # ===================================================================
 
 _seq_copy_kernel = None
@@ -178,7 +178,7 @@ def _define_triton_kernels():
     _strided_read_kernel = _strided_read_kernel_impl
 
 
-if HAS_TRITON:
+if USE_TRITON:
     _define_triton_kernels()
 
 
@@ -385,10 +385,8 @@ class MemBwBenchmark:
                 indices = self._generate_strided_indices(n_elements, stride)
 
             # Build the benchmark function (Triton kernel or pure-torch fallback)
-            use_triton = HAS_TRITON and xpu.is_cuda()
-
             if pattern == 'seq_copy':
-                if use_triton:
+                if USE_TRITON:
                     def fn():
                         _seq_copy_kernel[grid](src, dst, n_elements)
                 else:
@@ -396,7 +394,7 @@ class MemBwBenchmark:
                         _torch_seq_copy(src, dst)
                 bytes_transferred = 2 * n_elements * bpe  # read + write
             elif pattern == 'seq_read':
-                if use_triton:
+                if USE_TRITON:
                     def fn():
                         out_scalar.zero_()
                         _seq_read_kernel[grid](src, out_scalar, n_elements)
@@ -405,7 +403,7 @@ class MemBwBenchmark:
                         _torch_seq_read(src, out_scalar)
                 bytes_transferred = n_elements * bpe  # read only
             elif pattern == 'seq_write':
-                if use_triton:
+                if USE_TRITON:
                     def fn():
                         _seq_write_kernel[grid](dst, n_elements)
                 else:
@@ -413,7 +411,7 @@ class MemBwBenchmark:
                         _torch_seq_write(dst)
                 bytes_transferred = n_elements * bpe  # write only
             elif pattern == 'strided_copy':
-                if use_triton:
+                if USE_TRITON:
                     def fn():
                         _strided_copy_kernel[grid](src, dst, indices, n_elements)
                 else:
@@ -421,7 +419,7 @@ class MemBwBenchmark:
                         _torch_strided_copy(src, dst, indices)
                 bytes_transferred = 2 * n_elements * bpe  # read + write
             elif pattern == 'strided_read':
-                if use_triton:
+                if USE_TRITON:
                     def fn():
                         out_scalar.zero_()
                         _strided_read_kernel[grid](src, out_scalar, indices, n_elements)
@@ -497,7 +495,7 @@ class MemBwBenchmark:
             dtypes = ['float32']
 
         results = []
-        impl_tag = "Triton Autotune" if (HAS_TRITON and xpu.is_cuda()) else "Pure-Torch"
+        impl_tag = "Triton Autotune" if USE_TRITON else "Pure-Torch"
         print(f"\n{'='*100}")
         print(f"Memory Bandwidth Benchmark ({impl_tag}) | Device: {self.device_name}")
         print(f"L2 Cache: {self.l2_cache_mb:.0f} MB | "
@@ -697,7 +695,7 @@ class MemBwBenchmark:
         ax.set_xscale('log', base=2)
         ax.set_xlabel('Data Size (MB)', fontsize=12)
         ax.set_ylabel('Bandwidth (GB/s)', fontsize=12)
-        impl_tag = "Triton Autotune" if (HAS_TRITON and xpu.is_cuda()) else "Pure-Torch"
+        impl_tag = "Triton Autotune" if USE_TRITON else "Pure-Torch"
         l2_str = "Flush L2" if results[0].flush_l2_cache else "Keep L2"
         ax.set_title(
             f'HBM Bandwidth | {self.device_name} | {impl_tag}\n'

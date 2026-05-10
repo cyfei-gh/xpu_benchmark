@@ -11,7 +11,7 @@
 #   优先使用外部环境变量 CUDA_VISIBLE_DEVICES，否则使用 default_devices_list
 #
 # 示例：
-#   bash run.sh gpu 8 ./config/deepseek.json | tee "bench.log"
+#   bash run.sh gpu 8 ./config/basic.json | tee "bench.log"
 #   bash run.sh npu 4 ./config/basic.json
 #   bash run.sh cpu 2
 

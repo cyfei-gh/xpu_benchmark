@@ -28,7 +28,7 @@ pip install -r requirements.txt
 bash run.sh gpu 4 | tee bench.log
 
 # 指定配置文件
-python -m xpu_benchmark --config config/deepseek.json --output ./results/
+python -m xpu_benchmark --config config/basic.json --output ./results/
 
 # 多卡通信测试（需 torchrun 启动）
 torchrun --nproc_per_node=8 -m xpu_benchmark.bench_comm \
@@ -42,11 +42,11 @@ torchrun --nproc_per_node=8 -m xpu_benchmark.bench_comm \
 ```json
 {
     "llm_gemm": {
-        "model": "deepseek-v3",
-        "batch_sizes": [1, 4, 16, 64, 256, 1024, 4096],
-        "dtypes": ["bfloat16"],
+        "model": "Basic",
+        "batch_sizes": [1, 2, 3, 4, 8, 16, 32, 64, 128, 256, 1024, 4096, 4099, 5000, 8192],
+        "dtypes": ["fp32", "bf16", "fp16", "int8", "fp8_tensorwise", "fp8_rowwise", "mxfp8", "nvfp4"],
         "tp": 1,
-        "num_iters": 30,
+        "num_iters": 10,
         "dry_run_iters": 5
     },
     "memory": {
@@ -67,8 +67,7 @@ torchrun --nproc_per_node=8 -m xpu_benchmark.bench_comm \
 ```
 
 预置配置文件：
-- `config/deepseek.json` - DeepSeek-V3 LLM GEMM 配置
-- `config/basic.json` - 快速验证配置
+- `config/basic.json` - 全面测试配置
 
 ## 输出结果
 
@@ -105,7 +104,6 @@ xpu_benchmark/
 ├── hw_spec.py          # 硬件规格与 device_prefix
 ├── xpu_device.py       # CUDA / NPU 抽象
 ├── config/             # 配置文件目录
-│   ├── deepseek.json
 │   └── basic.json
 └── results/            # 结果输出目录
 ```

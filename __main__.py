@@ -4,36 +4,7 @@ xpu_benchmark main entry point.
 
 Usage:
     # Run benchmarks defined in config file
-    python -m xpu_benchmark --config config/deepseek.json
-
-Config file format (JSON):
-    Only the sections present in config will be executed.
-    Supported sections: "gemm", "memory", "llm_gemm", "comm"
-
-    Example:
-    {
-        "memory": {
-            "num_iters": 50,
-            "dry_run_iters": 10,
-            "dtypes": ["float32"],
-            "patterns": ["seq_copy", "seq_read"]
-        },
-        "llm_gemm": {
-            "model": "deepseek-v3",
-            "batch_sizes": [1, 4, 16, 64, 256, 1024, 4096],
-            "dtypes": ["bfloat16"],
-            "tp": 1,
-            "num_iters": 30,
-            "dry_run_iters": 5
-        },
-        "comm": {
-            "num_iters": 50,
-            "dry_run_iters": 10,
-            "world_size": [2, 4, 8],
-            "operations": ["allreduce", "allgather", "all2all", "all2allv"],
-            "dtype": "bfloat16"
-        }
-    }
+    python -m xpu_benchmark --config config/baic.json
 """
 
 import argparse
