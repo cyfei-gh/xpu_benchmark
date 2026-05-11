@@ -291,7 +291,7 @@ class GemmBenchmark:
             再 .view(float4_e2m1fn_x2) 得到打包视图.
 
         scale 构造规则 (统一用 randint 初始化):
-          - tensorwise            : scalar             (randint(1,4) -> fp32)
+          - tensorwise            : (1)             (randint(1,4) -> fp32)
           - rowwise               : (M,1) / (1,N) fp32 (randint(1,4) -> fp32)
           - blockwise_1x32 / 1x16 :
               GPU: [round_up(M,128), round_up(K/blk,4)] e8m0 / e4m3
@@ -316,6 +316,11 @@ class GemmBenchmark:
 
         if in_dtype == torch.int8:
             a = torch.randint(-128, 127, (m, k), device=device, dtype=torch.int8)
+            if xpu.is_npu():
+                # NPU npu_quant_matmul 要求 B 列主序 (K, N), 通过 (N, K).t() 得到
+                b = torch.randint(-128, 127, (n, k), device=device, dtype=torch.int8).t()
+                scale_a = torch.tensor([1.0], device=device, dtype=torch.float32)
+                return a, b, scale_a, None
             b = torch.randint(-128, 127, (k, n), device=device, dtype=torch.int8)
             return a, b, None, None
 
@@ -345,15 +350,17 @@ class GemmBenchmark:
             return a, b, None, None
 
         if scale_mode == "tensorwise":
-            target_dt = scale_dt if scale_dt is not None else torch.float32
-            scale_a = torch.randint(1, 4, (1,), device=device, dtype=torch.int32)[0].to(target_dt)
-            scale_b = torch.randint(1, 4, (1,), device=device, dtype=torch.int32)[0].to(target_dt)
+            scale_a = torch.randn((1,), device=device, dtype=scale_dt)
+            scale_b = torch.randn((1,), device=device, dtype=scale_dt)
             return a, b, scale_a, scale_b
 
         if scale_mode == "rowwise":
-            target_dt = scale_dt if scale_dt is not None else torch.float32
-            scale_a = torch.randint(1, 4, (m, 1), device=device, dtype=torch.int32).to(target_dt)
-            scale_b = torch.randint(1, 4, (1, n), device=device, dtype=torch.int32).to(target_dt)
+            if xpu.is_npu():
+                scale_a = torch.randn((m,), device=device, dtype=scale_dt)
+                scale_b = torch.randn((n,), device=device, dtype=scale_dt)
+                return a, b, scale_a, scale_b
+            scale_a = torch.randn((m, 1), device=device, dtype=scale_dt)
+            scale_b = torch.randn((1, n), device=device, dtype=scale_dt)
             return a, b, scale_a, scale_b
 
         if scale_mode in ("blockwise_1x32", "blockwise_1x16"):
@@ -409,10 +416,10 @@ class GemmBenchmark:
 
         # int8 -> int32
         if in_dtype == torch.int8:
-            if xpu.is_cuda():
+            if xpu.is_npu():
+                return torch_npu.npu_quant_matmul(a, b, scale_a, output_dtype=torch.float16)
+            elif xpu.is_cuda():
                 return torch._int_mm(a, b)
-            # NPU 上没有 _int_mm, 回退到 int32 matmul (精度不保证)
-            return torch.matmul(a.to(torch.int32), b.to(torch.int32))
 
         # FP8 / FP4
         if in_dtype not in (FP8_E4M3, FP4_E2M1X2):
@@ -420,10 +427,23 @@ class GemmBenchmark:
 
         # ---- NPU: torch_npu.npu_quant_matmul (FP8 / MXFP8 / MXFP4 共用) ----
         if xpu.is_npu():
-            if not _HAS_TORCH_NPU or not hasattr(torch_npu, "npu_quant_matmul"):
-                raise RuntimeError(
-                    "torch_npu.npu_quant_matmul 不可用, 无法在 NPU 上运行 FP8/FP4 GEMM"
+            scale_mode = cfg["scale_mode"]
+
+            # FP8 per-tensor: scale_a = [1] fp32
+            if scale_mode == "tensorwise":
+                return torch_npu.npu_quant_matmul(
+                    a, b, scale_a, output_dtype=out_dtype
                 )
+
+            # FP8 per-token + per-channel: scale_a = [M] fp32, scale_b = [N] fp32
+            if scale_mode == "rowwise":
+                return torch_npu.npu_quant_matmul(
+                    a, b, scale_b,
+                    pertoken_scale=scale_a,
+                    output_dtype=out_dtype,
+                )
+
+            # MXFP8 / MXFP4: per-block (block=32 along K) E8M0 scale
             x_dtype = torch.float8_e4m3fn if in_dtype == FP8_E4M3 else torch.float4_e2m1fn_x2
             return torch_npu.npu_quant_matmul(
                 a, b, scale_b,

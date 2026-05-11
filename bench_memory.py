@@ -731,7 +731,7 @@ class MemBwBenchmark:
                 writer.writerow([
                     'device', 'pattern', 'size_mb', 'dtype',
                     'median_time_ms', 'std_time_ms',
-                    'bandwidth_gbps', 'peak_bandwidth_gbps', 'utilization_pct',
+                    'bandwidth_gbps', 'peak_bandwidth_gbps', 'MBU',
                     'flush_l2_cache',
                 ])
                 for r in results:
