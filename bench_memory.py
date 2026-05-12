@@ -4,8 +4,8 @@ GPU/NPU Memory Bandwidth benchmark.
 Measures effective memory bandwidth with fine-grained control over:
 - Sequential (contiguous) memory access
 - Strided (non-contiguous / scattered) memory access
-- Triton autotune for optimal BLOCK_SIZE and num_warps selection (CUDA)
-- PyTorch 原生算子回退 (NPU 或无 Triton 环境)
+- Triton autotune for optimal BLOCK_SIZE and num_warps selection (CUDA/NPU)
+- PyTorch 原生算子回退 (无 Triton 环境)
 - Data sizes spanning L2 cache boundary
 
 Key metrics:
@@ -25,11 +25,11 @@ from dataclasses import dataclass
 from .timing import bench_gpu_time
 from .hw_spec import get_peak_bandwidth, get_l2_cache_size
 
-# Triton 仅在 CUDA 环境可用，NPU 上当前没有 triton。动态 import。
+# CUDA 和 NPU (Ascend) 环境均可用 Triton, 默认关闭,
 try:
     import triton
     import triton.language as tl
-    USE_TRITON = True if xpu.is_cuda() else False
+    USE_TRITON = False # xpu.is_available()
 except ImportError:
     triton = None
     tl = None
@@ -62,9 +62,6 @@ def _get_autotune_configs():
     configs = []
     for block_size in block_sizes:
         for num_warps in warp_options:
-            # 要求每个 thread 至少处理 2 个元素，便于生成向量化 load/store
-            if block_size < num_warps * 32 * 2:
-                continue
             for num_stages in stage_options:
                 configs.append(
                     triton.Config(
@@ -92,7 +89,12 @@ _strided_read_kernel = None
 
 
 def _define_triton_kernels():
-    """仅在 Triton 可用时构造 5 个 memory-bandwidth kernel 并注册到模块全局。"""
+    """仅在 Triton 可用时构造 5 个 memory-bandwidth kernel 并注册到模块全局。
+
+    Persistent Kernel 写法：
+    - 固定 grid size < 65535，满足 NPU 要求
+    - 每个 program 在循环中处理多个 block，避免 grid dim 过大
+    """
     global _seq_copy_kernel, _seq_read_kernel, _seq_write_kernel
     global _strided_copy_kernel, _strided_read_kernel
 
@@ -103,12 +105,26 @@ def _define_triton_kernels():
         n_elements,
         BLOCK_SIZE: tl.constexpr,
     ):
-        """Sequential copy: contiguous read from src + contiguous write to dst."""
+        """Sequential copy: contiguous read from src + contiguous write to dst.
+        """
         pid = tl.program_id(0)
-        offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
-        mask = offsets < n_elements
-        data = tl.load(src_ptr + offsets, mask=mask)
-        tl.store(dst_ptr + offsets, data, mask=mask)
+        num_programs = tl.num_programs(0)  # = GRID_SIZE
+        
+        # 计算每个 program 需要处理的 block 数量
+        num_blocks = tl.cdiv(n_elements, BLOCK_SIZE)
+        blocks_per_program = tl.cdiv(num_blocks, num_programs)
+        
+        # 当前 program 负责的 block 起始和结束索引
+        start_block = pid * blocks_per_program
+        end_block = tl.minimum(start_block + blocks_per_program, num_blocks)
+        
+        # 循环处理多个 block (persistent 方式)
+        for block_idx in range(start_block, end_block):
+            offset = block_idx * BLOCK_SIZE
+            offsets = offset + tl.arange(0, BLOCK_SIZE)
+            mask = offsets < n_elements
+            data = tl.load(src_ptr + offsets, mask=mask)
+            tl.store(dst_ptr + offsets, data, mask=mask)
 
     @triton.autotune(configs=_AUTOTUNE_CONFIGS, key=["n_elements"])
     @triton.jit
@@ -117,13 +133,24 @@ def _define_triton_kernels():
         n_elements,
         BLOCK_SIZE: tl.constexpr,
     ):
-        """Sequential read: contiguous read, accumulate to prevent optimization."""
+        """Sequential read: contiguous read, accumulate to prevent optimization.
+        """
         pid = tl.program_id(0)
-        offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
-        mask = offsets < n_elements
-        data = tl.load(src_ptr + offsets, mask=mask)
-        block_sum = tl.sum(data, axis=0)
-        tl.atomic_add(out_ptr, block_sum)
+        num_programs = tl.num_programs(0)
+        
+        num_blocks = tl.cdiv(n_elements, BLOCK_SIZE)
+        blocks_per_program = tl.cdiv(num_blocks, num_programs)
+        
+        start_block = pid * blocks_per_program
+        end_block = tl.minimum(start_block + blocks_per_program, num_blocks)
+        
+        for block_idx in range(start_block, end_block):
+            offset = block_idx * BLOCK_SIZE
+            offsets = offset + tl.arange(0, BLOCK_SIZE)
+            mask = offsets < n_elements
+            data = tl.load(src_ptr + offsets, mask=mask)
+            block_sum = tl.sum(data, axis=0)
+            tl.atomic_add(out_ptr, block_sum)
 
     @triton.autotune(configs=_AUTOTUNE_CONFIGS, key=["n_elements"])
     @triton.jit
@@ -132,11 +159,22 @@ def _define_triton_kernels():
         n_elements,
         BLOCK_SIZE: tl.constexpr,
     ):
-        """Sequential write: contiguous write of constant value."""
+        """Sequential write: contiguous write of constant value.
+        """
         pid = tl.program_id(0)
-        offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
-        mask = offsets < n_elements
-        tl.store(dst_ptr + offsets, 1.0, mask=mask)
+        num_programs = tl.num_programs(0)
+        
+        num_blocks = tl.cdiv(n_elements, BLOCK_SIZE)
+        blocks_per_program = tl.cdiv(num_blocks, num_programs)
+        
+        start_block = pid * blocks_per_program
+        end_block = tl.minimum(start_block + blocks_per_program, num_blocks)
+        
+        for block_idx in range(start_block, end_block):
+            offset = block_idx * BLOCK_SIZE
+            offsets = offset + tl.arange(0, BLOCK_SIZE)
+            mask = offsets < n_elements
+            tl.store(dst_ptr + offsets, 1.0, mask=mask)
 
     @triton.autotune(configs=_AUTOTUNE_CONFIGS, key=["n_elements"])
     @triton.jit
@@ -146,13 +184,24 @@ def _define_triton_kernels():
         n_elements,
         BLOCK_SIZE: tl.constexpr,
     ):
-        """Strided copy: gather read via indices + scatter write via indices."""
+        """Strided copy: gather read via indices + scatter write via indices.
+        """
         pid = tl.program_id(0)
-        offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
-        mask = offsets < n_elements
-        idx = tl.load(indices_ptr + offsets, mask=mask)
-        data = tl.load(src_ptr + idx, mask=mask)
-        tl.store(dst_ptr + idx, data, mask=mask)
+        num_programs = tl.num_programs(0)
+        
+        num_blocks = tl.cdiv(n_elements, BLOCK_SIZE)
+        blocks_per_program = tl.cdiv(num_blocks, num_programs)
+        
+        start_block = pid * blocks_per_program
+        end_block = tl.minimum(start_block + blocks_per_program, num_blocks)
+        
+        for block_idx in range(start_block, end_block):
+            offset = block_idx * BLOCK_SIZE
+            offsets = offset + tl.arange(0, BLOCK_SIZE)
+            mask = offsets < n_elements
+            idx = tl.load(indices_ptr + offsets, mask=mask)
+            data = tl.load(src_ptr + idx, mask=mask)
+            tl.store(dst_ptr + idx, data, mask=mask)
 
     @triton.autotune(configs=_AUTOTUNE_CONFIGS, key=["n_elements"])
     @triton.jit
@@ -162,14 +211,25 @@ def _define_triton_kernels():
         n_elements,
         BLOCK_SIZE: tl.constexpr,
     ):
-        """Strided read: gather read via indices, reduce to scalar."""
+        """Strided read: gather read via indices, reduce to scalar.
+        """
         pid = tl.program_id(0)
-        offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
-        mask = offsets < n_elements
-        idx = tl.load(indices_ptr + offsets, mask=mask)
-        data = tl.load(src_ptr + idx, mask=mask)
-        block_sum = tl.sum(data, axis=0)
-        tl.atomic_add(out_ptr, block_sum)
+        num_programs = tl.num_programs(0)
+        
+        num_blocks = tl.cdiv(n_elements, BLOCK_SIZE)
+        blocks_per_program = tl.cdiv(num_blocks, num_programs)
+        
+        start_block = pid * blocks_per_program
+        end_block = tl.minimum(start_block + blocks_per_program, num_blocks)
+        
+        for block_idx in range(start_block, end_block):
+            offset = block_idx * BLOCK_SIZE
+            offsets = offset + tl.arange(0, BLOCK_SIZE)
+            mask = offsets < n_elements
+            idx = tl.load(indices_ptr + offsets, mask=mask)
+            data = tl.load(src_ptr + idx, mask=mask)
+            block_sum = tl.sum(data, axis=0)
+            tl.atomic_add(out_ptr, block_sum)
 
     _seq_copy_kernel = _seq_copy_kernel_impl
     _seq_read_kernel = _seq_read_kernel_impl
@@ -369,9 +429,14 @@ class MemBwBenchmark:
         # Stride for non-contiguous patterns
         stride = 128
 
-        # Grid 由 autotune 选中的 BLOCK_SIZE 动态决定
+        # Grid: 动态计算，NPU 上限 1024（满足 NPU grid dim < 65535 要求）
+        # 每个 program 在 kernel 内部循环处理多个 block (persistent 方式)
         def grid(meta):
-            return ((n_elements + meta['BLOCK_SIZE'] - 1) // meta['BLOCK_SIZE'],)
+            grid_size = triton.cdiv(n_elements, meta['BLOCK_SIZE'])
+            if xpu.is_npu():
+                return (min(grid_size, 1024),)
+            elif xpu.is_cuda():
+                return (grid_size,)
 
         try:
             # Allocate buffers
