@@ -294,11 +294,14 @@ def run_llm_gemm(config: dict, output_dir: str = None, use_events: bool = False)
     tp = cfg.get('tp', 1)
     num_iters = cfg.get('num_iters', 30)
     dry_run_iters = cfg.get('dry_run_iters', 5)
+    # Get backends from config, default to ['torch'] if not specified
+    backends = cfg.get('backends', ['torch'])
 
     bench = GemmBenchmark(
         num_iters=num_iters,
         dry_run_iters=dry_run_iters,
         enable_cupti=not use_events,
+        backends=backends,
     )
 
     results = bench.run(
