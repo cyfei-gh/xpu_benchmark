@@ -133,16 +133,3 @@ def create_gemm(M: int, N: int, K: int, dtype: str = 'bf16', device: str = 'cuda
         return gemm_triton(a, b)
     
     return gemm_func
-
-
-class TritonGemm:
-    """Triton GEMM operator class."""
-    
-    def __init__(self, M: int, N: int, K: int, dtype: torch.dtype = torch.float16):
-        self.M = M
-        self.N = N
-        self.K = K
-        self.dtype = dtype
-        
-    def __call__(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        return gemm_triton(a, b)

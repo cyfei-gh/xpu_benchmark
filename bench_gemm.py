@@ -1261,8 +1261,6 @@ class GemmBenchmark:
             ax.set_ylim(bottom=0, top=y_max * 1.15)
 
         def _save():
-            # 增加底部边距，确保 legend 完整显示
-            plt.subplots_adjust(bottom=0.25)
             plt.savefig(output_path, dpi=150, bbox_inches='tight')
             plt.close()
             print(f"[INFO] Combined batch-TFLOPS plot saved to: {output_path}")
@@ -1347,20 +1345,13 @@ class GemmBenchmark:
             all_handles.append(h)
             all_labels.append(h.get_label())
 
-        # 将合并后的 legend 放在图表底部（水平排列）
-        # 根据图例数量调整位置
+        # 将合并后的 legend 放在图表左上角
         n_legend_items = len(all_handles)
-        if n_legend_items > 6:
-            # 图例项较多，调整底部边距
-            plt.subplots_adjust(bottom=0.35)
-            ncol = min(n_legend_items, 3)
-        else:
-            ncol = n_legend_items
+        ncol = min(n_legend_items, 1)
 
         ax.legend(
             all_handles, all_labels,
-            loc='lower center',
-            bbox_to_anchor=(0.5, -0.35),
+            loc='center left',
             ncol=ncol,
             fontsize=9,
             framealpha=0.9,
