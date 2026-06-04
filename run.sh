@@ -119,5 +119,11 @@ python3 -m xpu_benchmark --config "${CONFIG}" --output "${OUTPUT_DIR}"
 # ---------------------------------------------------------------------
 # 运行通信 benchmark（多进程，后端自动匹配 nccl / hccl / gloo）
 # ---------------------------------------------------------------------
-torchrun --nproc_per_node=${NPROC} -m xpu_benchmark.bench_comm \
-    --config "${CONFIG}" --output "${OUTPUT_DIR}"
+# 若设置 SKIP_COMM 则跳过通信 benchmark（例如并行跑多卡单进程时，
+# 多个 torchrun 会争抢 rendezvous 端口导致 EADDRINUSE 冲突）
+if [[ -n "${SKIP_COMM:-}" ]]; then
+    echo "[INFO] 已设置 SKIP_COMM, 跳过通信 benchmark (torchrun xpu_benchmark.bench_comm)"
+else
+    torchrun --nproc_per_node=${NPROC} -m xpu_benchmark.bench_comm \
+        --config "${CONFIG}" --output "${OUTPUT_DIR}"
+fi
