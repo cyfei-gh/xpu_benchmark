@@ -103,6 +103,18 @@ DEVICE_SPECS = {
         "float8": 800,
         "float4": 1600,
     },
+    "AMD MI308X": {
+        "name": "MI308X",
+        "bandwidth": 4000,       # HBM3 带宽 5.3 TB/s
+        "memory_capacity": 192,  # HBM3 192 GB
+        "l2_cache": 256,         # Infinity Cache (MALL) 256 MB
+        "float32": 30,           # Matrix FP32 (合规上限, MI300X 为 163)
+        "float16": 200,          # Matrix FP16/BF16
+        "bfloat16": 200,
+        "int8": 400,             # Matrix INT8 / FP8
+        "float8": 400,
+        "float4": 0,             # gfx942 无 FP4 matrix core (需 gfx950)
+    },
 }
 
 

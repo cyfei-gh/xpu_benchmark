@@ -43,8 +43,15 @@ from .hw_spec import (
 # ===================================================================
 
 _HAS_SCALED = hasattr(torch, "_scaled_mm")
-FP8_E4M3    = getattr(torch, "float8_e4m3fn",   None)
-FP8_E5M2    = getattr(torch, "float8_e5m2",     None)
+
+# ROCm (AMD MI300/MI308, gfx942) use FP8 fnuz format,
+_IS_ROCM = getattr(torch.version, "hip", None) is not None
+
+if _IS_ROCM:
+    FP8_E4M3 = getattr(torch, "float8_e4m3fnuz", None)
+else:
+    FP8_E4M3 = getattr(torch, "float8_e4m3fn", None)
+
 FP8_E8M0    = getattr(torch, "float8_e8m0fnu",  None)
 FP4_E2M1X2  = getattr(torch, "float4_e2m1fn_x2", None)
 

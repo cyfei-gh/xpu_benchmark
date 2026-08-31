@@ -100,8 +100,23 @@ def empty_cache() -> None:
         pass
 
 
+# ROCm marketing name is empty on some SKUs (e.g. MI308X); map gfx arch to a name.
+_ROCM_GFX_NAME = {
+    "gfx942": "AMD MI308X",
+    "gfx950": "AMD MI350X",
+}
+
 def get_device_name(idx: int = 0) -> str:
-    return _mod().get_device_name(idx)
+    raw = _mod().get_device_name(idx) or ""
+    # ROCm fallback when name is empty or just a gfx arch string.
+    if _BACKEND == "cuda" and (not raw or raw.lower().startswith("gfx")):
+        try:
+            gfx = getattr(torch.cuda.get_device_properties(idx), "gcnArchName", "") or ""
+        except Exception:
+            return raw
+        gfx_key = gfx.split(":", 1)[0]
+        return _ROCM_GFX_NAME.get(gfx_key, raw or gfx_key)
+    return raw
 
 
 def get_device_properties(idx: int = 0):
